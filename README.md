@@ -42,7 +42,7 @@ nuk4sd --new <name> --path <dir> --protected --password <pass> --engine <0-5>
 ```
 
 `--engine` controls the obfuscation level (0 = none, up to 5 = 20 layers +
-fake `.enc` file). I did not test the practical effect of each level.
+fake `.enc` file). 
 
 ### Query a vault
 
