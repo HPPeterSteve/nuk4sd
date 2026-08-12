@@ -178,8 +178,8 @@ Issues and pull requests are open. For security concerns, open an issue tagged `
 
 ## License
 
-MIT
+
 
 ```
-Copyright (c) 2025 Pedro — Vault-Founders
+Copyright (c) 2025 Peter — Vault-Founders
 ```
