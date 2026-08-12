@@ -1,185 +1,182 @@
 # Nuk4sd
 
-> A Linux process sandbox with encrypted storage. No wrappers, no buzzwords — just namespaces, FUSE and seccomp doing their job.
+> Pragmatic Linux process sandboxing paired with encrypted storage (AES-256-GCM + Argon2id). Built using Linux namespaces, Seccomp-BPF, Landlock, and FUSE.
 
 [![Version](https://img.shields.io/badge/version-0.9.26-blue)](https://github.com/Vault-Founders/Nuk4sd/releases)
 [![Platform](https://img.shields.io/badge/platform-Linux-informational)](https://kernel.org)
-[![License](https://img.shields.io/badge/license-MIT-green)](#license)
+[![License](https://img.shields.io/badge/license-MPL--2.0-green)](#license)
 [![Language](https://img.shields.io/badge/core-C%20%2B%20Rust-orange)](https://github.com/Vault-Founders/Nuk4sd)
 
 ---
 
-## What it does
+## Overview
 
-Nuk4sd runs a program inside an isolated environment (sandbox) while keeping its data in an encrypted storage vault (FUSE + AES-256-GCM).
+**Nuk4sd** is a hybrid C/Rust utility that combines process-level sandboxing with hardware-independent encrypted storage. It allows you to run untrusted or sensitive applications inside an isolated environment while storing their persistent data in encrypted vaults.
 
-The goal is simple: **you decide what a program can see, touch and talk to.** Network, display server, home directory, audio, D-Bus — you allow or deny each one explicitly.
+Rather than relying on heavyweight container runtimes or complex virtual machines, Nuk4sd leverages core Linux kernel primitives: **User Namespaces**, **Mount Namespaces**, **Seccomp-BPF**, **Landlock**, and **FUSE**.
 
-```bash
-# Run Firefox with no network access, isolated from the host home directory
-Nuk4sd --vault 0 --run /usr/bin/firefox --no-net --wayland --ro-home
+---
 
-# Run VS Code with access to ~/projects only
-Nuk4sd --vault 1 --run /usr/bin/code --wayland --rw ~/projects --blacklist ~/.ssh
+## Development Status
 
-# Encrypt all files stored in vault 2
-Nuk4sd --vault 2 --encrypt
+### ✅ Working & Stable
+* **Process Sandboxing:** User namespace isolation (`CLONE_NEWUSER`), PID isolation (`CLONE_NEWPID`), and Mount namespaces (`CLONE_NEWNS`) with `pivot_root`.
+* **Syscall Filtering:** Seccomp-BPF allowlisting with standard and strict profile modes, plus capability dropping (`cap_drop(ALL)`) and `NO_NEW_PRIVS`.
+* **Landlock LSM Integration:** Path-based access control rules enforced at the kernel level.
+* **Storage Encryption:** File & vault payload encryption using **AES-256-GCM** with **Argon2id** key derivation (64 MB memory cost, 3 iterations).
+* **WORM (Write Once Read Many) Protection:** Fine-grained kernel/FUSE flags to block `unlink`, `rename`, `write`, or `read` operations.
+* **Integrity Monitoring:** Leaky-bucket algorithm for file access throttling and integrity alerts.
+* **CLI & Interactive REPL:** Command-line runner and interactive shell interface (`Nuk4sd`).
+
+### 🟡 In Progress / Limitations
+* **Native Windows Build:** The codebase relies directly on Linux kernel APIs (`pivot_root`, `fanotify`, `landlock`, `seccomp`). Native compilation on Windows is not supported (requires WSL2 or Linux host).
+* **Unprivileged Fanotify:** Active `fanotify` filesystem blocking requires `CAP_SYS_ADMIN` / `root`. When run unprivileged, Nuk4sd automatically degrades to passive FUSE monitoring without crashing.
+* **App Profile Coverage:** Default profiles are lighter compared to projects with large community rulebases (like Firejail).
+
+### ❌ Abandoned / Replaced Approaches
+* **Helper Binaries (`newuidmap`/`newgidmap`):** Originally used 2-line UID mappings requiring external setuid helpers. Replaced with single-line `unshare()` mapping to keep Nuk4sd fully rootless and self-contained.
+* **PBKDF2-HMAC-SHA256:** Legacy key derivation was replaced with Argon2id to provide memory-hard resistance against GPU/ASIC cracking.
+
+---
+
+## Comparison & Trade-offs
+
+| Feature / Property | Nuk4sd | Firejail | Bubblewrap | Docker / Podman | Cryptomator / gocryptfs |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Built-in Encrypted Vaults** | **Yes** (AES-GCM + Argon2id) | ❌ | ❌ | ❌ | **Yes** |
+| **Process Sandboxing** | **Yes** (Seccomp + Landlock) | **Yes** | **Yes** | **Yes** | ❌ |
+| **Daemonless & Rootless** | **Yes** | Setuid wrapper | **Yes** | Requires Daemon/Podman | **Yes** |
+| **WORM File Locking** | **Yes** | ❌ | ❌ | ❌ | ❌ |
+| **Active Access Throttling** | **Yes** (Leaky bucket) | ❌ | ❌ | ❌ | ❌ |
+| **Resource Overhead** | Minimal (< 10 MB) | Minimal | Minimal | Heavy (Image/Daemon) | Minimal |
+
+---
+
+## Security Architecture
+
+```
+                    ┌────────────────────────────────────────┐
+                    │            Nuk4sd Sandbox              │
+                    │                                        │
+                    │  ┌──────────────────────────────────┐  │
+                    │  │         Target Process           │  │
+                    │  └──────────────────────────────────┘  │
+                    │                   │                    │
+                    │   - Seccomp-BPF   │  - Landlock LSM    │
+                    │   - cap_drop(ALL) │  - NO_NEW_PRIVS    │
+                    └───────────────────┼────────────────────┘
+                                        │ (Mount / Pivot)
+                    ┌───────────────────▼────────────────────┐
+                    │               FUSE Layer               │
+                    │       (WORM Flags & Leaky Bucket)      │
+                    └───────────────────┬────────────────────┘
+                                        │ (AES-256-GCM)
+                    ┌───────────────────▼────────────────────┐
+                    │            Encrypted Vault             │
+                    │          (Argon2id Key Deriv)          │
+                    └────────────────────────────────────────┘
 ```
 
----
-
-## How it works
-
-Each sandbox is built from standard Linux primitives — nothing exotic, nothing that requires a kernel patch:
-
-| Layer | Technology |
-|---|---|
-| Process isolation | User namespaces (`CLONE_NEWUSER`, `CLONE_NEWNS`, `CLONE_NEWPID`) |
-| Filesystem isolation | `pivot_root` + bind mounts into a FUSE-mounted vault |
-| Privilege dropping | `NO_NEW_PRIVS` + `cap_drop(ALL)` |
-| Syscall filtering | Seccomp-BPF (standard + strict modes) |
-| Encrypted storage | AES-256-GCM via OpenSSL, key derived with Argon2 |
-| Mount-level encryption | FUSE driver (no external dependency like `gocryptfs`) |
-
-The sandbox runs as your own user — `sudo` is only required for the initial mount/unmount of the FUSE volume.
+1. **User Space Execution:** Runs as an unprivileged user process without requiring a setuid binary.
+2. **5-Layer Defense-in-Depth:** `User Namespaces` → `Mount Namespaces` → `pivot_root` → `Capability Drop` → `Seccomp-BPF` / `Landlock`.
+3. **Decoy Labyrinth Engine:** Generates honeypot structures to detect and halt suspicious directory traversal or ransomware-like sweep attacks.
 
 ---
 
-## Comparison
+## Installation & Build
 
-|  | Nuk4sd | Firejail | Bubblewrap | Docker |
-|---|---|---|---|---|
-| Encrypted storage built-in | ✅ | ❌ | ❌ | ❌ |
-| No kernel module required | ✅ | ✅ | ✅ | ❌ |
-| Runs as regular user | ✅ | ✅ | ✅ | ❌ |
-| Per-app GUI profiles | ✅ | Partial | ❌ | ❌ |
-| FUSE vault (own impl.) | ✅ | ❌ | ❌ | ❌ |
-| Graphical interface (GUI) | ✅ | ❌ | ❌ | Partial |
-| Seccomp-BPF | ✅ | ✅ | ✅ | ✅ |
+### Prerequisites (Linux)
+- **Rust Toolchain** (1.70+)
+- **GCC / Clang**
+- **Libraries:** `libfuse3-dev`, `libssl-dev`, `libseccomp-dev`, `libcap-dev`, `libargon2-dev`
 
----
-
-## Installation
-
-### Build from source
+### Build Command
 
 ```bash
-# Dependencies: Rust toolchain, GCC, libfuse3-dev, libssl-dev, python3-pyqt5
-git clone https://github.com/Vault-Founders/Nuk4sd
+git clone https://github.com/Vault-Founders/Nuk4sd.git
 cd Nuk4sd
 cargo build --release
-
-sudo cp target/release/Nuk4sd /usr/local/bin/
 ```
 
-### GUI (optional)
-
-```bash
-# Requires: python3-pyqt5
-python3 nuk4sd_gui.py
-
-# Or as a persistent systemd user service:
-systemctl --user start nuk4sd.service
-```
+The compiled binary will be located at `target/release/Nuk4sd`.
 
 ---
 
-## Key flags
+## Usage & Flag Reference
 
-```
---vault <id>          Select which encrypted vault to mount
---run <exe>           Program to execute inside the sandbox
---no-net              Block all network access (CLONE_NEWNET)
---no-fuse             Skip vault mount — use a plain temp directory instead
---wayland             Allow Wayland socket access
---x11                 Allow X11 socket access
---ro <path>           Mount path read-only inside the sandbox
---rw <path>           Mount path read-write inside the sandbox
---blacklist <path>    Hide path entirely from the sandboxed process
---ro-home             Mount home directory as read-only
---audio               Allow PipeWire/PulseAudio socket access
---no-dbus             Block D-Bus session socket
---seccomp-strict      Enable strict syscall filtering
---debug               Print detailed sandbox construction log
---verbose             Verbose output during execution
---encrypt             Encrypt all files in the vault (AES-256-GCM)
---decrypt             Decrypt all files in the vault
---ls                  List all configured vaults and their status
---new <name>          Create a new vault
---export              Export vault contents to a plain directory
-```
-
----
-
-## Vaults
-
-A vault is an encrypted directory managed by Nuk4sd. It only gets unlocked when you explicitly run something inside it, and it re-seals the moment the process exits.
+### General Usage
 
 ```bash
-# Create a new vault
-Nuk4sd --new work --path ~/.local/share/nuk4sd/work
+# Launch interactive REPL mode
+Nuk4sd
 
-# List vaults and their status
+# List existing vaults
 Nuk4sd --ls
 
-# Run a program inside vault 0, then auto-unmount on exit
-Nuk4sd --vault 0 --run /usr/bin/gedit
+# Create a protected vault with Argon2id password protection
+Nuk4sd --new my_vault --protected
+
+# Run an application inside the sandbox
+Nuk4sd --vault 1 --run /usr/bin/firefox --no-net --wayland
 ```
 
----
+### Complete Command Line Flags
 
-## GUI
+#### Vault Operations
+* `--ls` : List all configured vaults and status.
+* `--new <name>` : Create a new vault.
+  * `--path <dir>` : Specify storage path (default: `~/.local/share/Nuk4sd`).
+  * `--protected` : Enable password protection (AES-256-GCM + Argon2id).
+  * `--engine <0-5>` : Set obfuscation layer complexity (0=none, 5=20 layers + decoys).
+* `--vault <id>` : Select active vault for operation.
+  * `--info` : Display vault details and metadata.
+  * `--files` : List tracked files and SHA-256 integrity hashes.
+  * `--scan` : Execute SHA-256 integrity verification pass.
+  * `--encrypt` : Encrypt vault contents with AES-256-GCM.
+  * `--decrypt` : Decrypt vault contents.
+  * `--mount` : Mount vault using FUSE driver.
+  * `--umount` : Unmount FUSE driver.
+  * `--export --dest <dir>` : Export vault contents to a directory.
+  * `--rm` : Delete vault irreversibly.
+  * `--rename <name>` : Change vault name in catalog.
+  * `--passwd` : Change vault password using Argon2id.
 
-Nuk4sd ships with a PyQt5 desktop interface:
+#### Sandbox Execution (`--run <executable>`)
+* **Filesystem Controls:**
+  * `--ro <path>` : Bind mount path as read-only.
+  * `--rw <path>` : Bind mount path as read-write.
+  * `--blacklist <path>` : Hide path using tmpfs/null overlay.
+  * `--ro-home` : Mount `$HOME` read-only.
+  * `--rw-home` : Mount `$HOME` read-write.
+  * `--tmp-home` : Provide ephemeral `$HOME` in tmpfs.
+* **Network & IPC:**
+  * `--no-net` : Isolate network namespace (`CLONE_NEWNET`).
+  * `--unshare-ipc` : Isolate IPC namespace (SysV SHM, semaphores, message queues).
+  * `--unshare-uts` : Isolate UTS namespace (hostname).
+  * `--hostname <name>` : Set sandbox hostname.
+* **Display & Subsystems:**
+  * `--wayland` : Pass Wayland display socket (read-only).
+  * `--x11` : Pass X11 display socket (read-only).
+  * `--audio` : Pass PulseAudio/PipeWire sockets.
+  * `--gpu` : Expose `/dev/dri` for hardware acceleration.
+  * `--no-dbus` : Block D-Bus session bus access.
+* **Syscall & Security Options:**
+  * `--seccomp-strict` : Enable restrictive syscall allowlist.
+  * `--no-seccomp` : Disable seccomp filtering (not recommended).
+  * `--chroot` : Fallback to `chroot` instead of `pivot_root`.
+  * `--permissive` : Relax sandbox restrictions for troubleshooting.
+  * `--audit` : Log execution arguments, environment changes, and mounts.
 
-- **Sandbox Desktop** — launch sandboxed apps from a visual desktop (custom wallpaper, icon grid, right-click context menus)
-- **Per-app profiles** — save flag sets and mount configurations per application
-- **Vault Manager** — encrypt, decrypt and browse vault contents visually
-- **Active Monitor** — see running sandbox processes in real time, with kill support
-- **Audit Log** — view the full Seccomp/kernel audit trail
-- **Achievements** — a lightweight gamification layer that tracks usage patterns
-
-The GUI calls the same binary. It is a frontend, not a separate implementation.
-
----
-
-## Use cases
-
-**Daily browser isolation**
-Run Firefox with `--no-net` on certain vaults, or `--ro-home` so it cannot read your SSH keys, wallet files or other browser profiles.
-
-**Untrusted software**
-That Electron app, closed-source installer or random script from the internet — run it with explicit, auditable permissions and nothing else.
-
-**Secure document editing**
-Open sensitive files inside an encrypted vault. They never touch your main filesystem in plaintext outside the session.
-
-**Development environments**
-Give a project access to `~/projects/foo` and nothing else. No accidental writes to `~/.config` or `~/.local`.
-
-**Penetration testing tools**
-Run network tools from an isolated environment without exposing your host credentials or contaminating your main session.
-
----
-
-## Status
-
-Version `0.9.26`. Used daily on GNOME/X11 and Wayland systems.
-
-Core sandbox functionality (namespaces, seccomp, mounts) is stable. FUSE mount reliability depends on your kernel version — tested on Linux 6.x. Breaking changes are possible before `1.0`.
-
----
-
-## Contributing
-
-Issues and pull requests are open. For security concerns, open an issue tagged `security` — no bounty program yet, just responsible disclosure.
+#### WORM Protection Flags
+* `--vault <id> --worm-status` : Show active WORM flags for vault.
+* `--vault <id> --protect-delete` : Block `unlink`/`rmdir` (returns `EPERM`).
+* `--vault <id> --protect-rename` : Block file/directory renaming (`EPERM`).
+* `--vault <id> --protect-write` : Block modifications to existing files (`EPERM`).
+* `--vault <id> --protect-read` : Block read access (`EPERM`).
+* `--vault <id> --clear-delete` : Clear delete protection flag.
 
 ---
 
 ## License
 
-MPL 2.0
-
-```
-Copyright (c) 2025 Peter — Vault-Founders
-```
+This project is licensed under the **Mozilla Public License 2.0 (MPL-2.0)**. See the [LICENSE](LICENSE) file for details.
