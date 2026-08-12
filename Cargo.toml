@@ -1,20 +1,20 @@
 [package]
 name = "Nuk4sd"
-version = "0.9.24"
+version = "0.9.29"
 edition = "2021"
 build = "build.rs"
 
 [[bin]]
 name = "Nuk4sd"
-path = "src/main.rs"
+path = "rust/main.rs"
+
 
 [dependencies]
+
 # CLI / Interação
 colored = "3.1.1"
 inquire = "0.9.4"
 rustyline = "17.0.2"
-rfd = "0.15.2"
-
 # System & FS
 sysinfo = "0.38.4"
 home = "0.5.12"
@@ -29,7 +29,18 @@ argon2 = "0.5"
 
 # Utilitários
 hex = "0.4.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
+# Networking & Async (Image Puller)
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+tar = "0.4.40"
+flate2 = "1.0.28"
+tokio = { version = "1.36", features = ["full"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cgroups-rs = "0.5.1"
+oci-spec = "0.10.0"
 
 [build-dependencies]
 cc = "1.1"
