@@ -178,7 +178,7 @@ Issues and pull requests are open. For security concerns, open an issue tagged `
 
 ## License
 
-
+MPL 2.0
 
 ```
 Copyright (c) 2025 Peter — Vault-Founders
