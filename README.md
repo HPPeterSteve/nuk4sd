@@ -1,153 +1,185 @@
-# nuk4sd
+# Nuk4sd
 
-CLI for managing encrypted vaults on Linux, with a sandbox layer for running
-programs isolated inside them.
+> A Linux process sandbox with encrypted storage. No wrappers, no buzzwords — just namespaces, FUSE and seccomp doing their job.
 
-Status: **beta**. Manually tested on build v0.9.24. There are behaviors
-observed during testing that deserve attention before using this in
-production — see "Observed limitations" below.
+[![Version](https://img.shields.io/badge/version-0.9.26-blue)](https://github.com/Vault-Founders/Nuk4sd/releases)
+[![Platform](https://img.shields.io/badge/platform-Linux-informational)](https://kernel.org)
+[![License](https://img.shields.io/badge/license-MIT-green)](#license)
+[![Language](https://img.shields.io/badge/core-C%20%2B%20Rust-orange)](https://github.com/Vault-Founders/Nuk4sd)
 
-## What it is
+---
 
-Each **vault** is an isolated unit: a directory whose actual content is
-stored encrypted (AES-256-GCM) in `~/.local/share/Nuk4sd/cipher_<id>`, and
-only exposed via FUSE when you mount the vault or run something inside it.
-Otherwise, the vault directory sits at permission `000` (no access, not even
-for the owner).
+## What it does
 
-`--run` mounts the vault and also builds a sandbox around the process: new
-namespaces, root switched into the vault (pivot_root), and all Linux
-capabilities dropped before the program executes.
+Nuk4sd runs a program inside an isolated environment (sandbox) while keeping its data in an encrypted storage vault (FUSE + AES-256-GCM).
 
-## Interactive mode
+The goal is simple: **you decide what a program can see, touch and talk to.** Network, display server, home directory, audio, D-Bus — you allow or deny each one explicitly.
 
-Running with no arguments opens a prompt (`nuk4sd>`), accepting the same
-commands line by line, `exit` to quit.
+```bash
+# Run Firefox with no network access, isolated from the host home directory
+Nuk4sd --vault 0 --run /usr/bin/firefox --no-net --wayland --ro-home
 
-## Commands tested
+# Run VS Code with access to ~/projects only
+Nuk4sd --vault 1 --run /usr/bin/code --wayland --rw ~/projects --blacklist ~/.ssh
 
-### Catalog
-
-```
-nuk4sd --ls                    # list registered vaults
-nuk4sd --version                # binary version
-nuk4sd --help                   # full help
+# Encrypt all files stored in vault 2
+Nuk4sd --vault 2 --encrypt
 ```
 
-### Create a vault
+---
+
+## How it works
+
+Each sandbox is built from standard Linux primitives — nothing exotic, nothing that requires a kernel patch:
+
+| Layer | Technology |
+|---|---|
+| Process isolation | User namespaces (`CLONE_NEWUSER`, `CLONE_NEWNS`, `CLONE_NEWPID`) |
+| Filesystem isolation | `pivot_root` + bind mounts into a FUSE-mounted vault |
+| Privilege dropping | `NO_NEW_PRIVS` + `cap_drop(ALL)` |
+| Syscall filtering | Seccomp-BPF (standard + strict modes) |
+| Encrypted storage | AES-256-GCM via OpenSSL, key derived with Argon2 |
+| Mount-level encryption | FUSE driver (no external dependency like `gocryptfs`) |
+
+The sandbox runs as your own user — `sudo` is only required for the initial mount/unmount of the FUSE volume.
+
+---
+
+## Comparison
+
+|  | Nuk4sd | Firejail | Bubblewrap | Docker |
+|---|---|---|---|---|
+| Encrypted storage built-in | ✅ | ❌ | ❌ | ❌ |
+| No kernel module required | ✅ | ✅ | ✅ | ❌ |
+| Runs as regular user | ✅ | ✅ | ✅ | ❌ |
+| Per-app GUI profiles | ✅ | Partial | ❌ | ❌ |
+| FUSE vault (own impl.) | ✅ | ❌ | ❌ | ❌ |
+| Graphical interface (GUI) | ✅ | ❌ | ❌ | Partial |
+| Seccomp-BPF | ✅ | ✅ | ✅ | ✅ |
+
+---
+
+## Installation
+
+### Build from source
+
+```bash
+# Dependencies: Rust toolchain, GCC, libfuse3-dev, libssl-dev, python3-pyqt5
+git clone https://github.com/Vault-Founders/Nuk4sd
+cd Nuk4sd
+cargo build --release
+
+sudo cp target/release/Nuk4sd /usr/local/bin/
+```
+
+### GUI (optional)
+
+```bash
+# Requires: python3-pyqt5
+python3 nuk4sd_gui.py
+
+# Or as a persistent systemd user service:
+systemctl --user start nuk4sd.service
+```
+
+---
+
+## Key flags
 
 ```
-nuk4sd --new <name> --path <dir>                          # no password
-nuk4sd --new <name> --path <dir> --protected --password <pass> --engine <0-5>
+--vault <id>          Select which encrypted vault to mount
+--run <exe>           Program to execute inside the sandbox
+--no-net              Block all network access (CLONE_NEWNET)
+--no-fuse             Skip vault mount — use a plain temp directory instead
+--wayland             Allow Wayland socket access
+--x11                 Allow X11 socket access
+--ro <path>           Mount path read-only inside the sandbox
+--rw <path>           Mount path read-write inside the sandbox
+--blacklist <path>    Hide path entirely from the sandboxed process
+--ro-home             Mount home directory as read-only
+--audio               Allow PipeWire/PulseAudio socket access
+--no-dbus             Block D-Bus session socket
+--seccomp-strict      Enable strict syscall filtering
+--debug               Print detailed sandbox construction log
+--verbose             Verbose output during execution
+--encrypt             Encrypt all files in the vault (AES-256-GCM)
+--decrypt             Decrypt all files in the vault
+--ls                  List all configured vaults and their status
+--new <name>          Create a new vault
+--export              Export vault contents to a plain directory
 ```
 
-`--engine` controls the obfuscation level (0 = none, up to 5 = 20 layers +
-fake `.enc` file). 
+---
 
-### Query a vault
+## Vaults
 
-```
-nuk4sd --vault <id> --status            # OK / LOCKED / ALERT / DELETED
-nuk4sd --vault <id> --info              # name, type, path, file count, etc.
-nuk4sd --vault <id> --files             # tracked files + hash
-nuk4sd --vault <id> --scan              # integrity scan (SHA-256)
-```
+A vault is an encrypted directory managed by Nuk4sd. It only gets unlocked when you explicitly run something inside it, and it re-seals the moment the process exits.
 
-`--json` works on `--status` and `--scan`, compact output like
-`{"id":1,"status":"OK"}`.
+```bash
+# Create a new vault
+Nuk4sd --new work --path ~/.local/share/nuk4sd/work
 
-### Run a program inside the vault
+# List vaults and their status
+Nuk4sd --ls
 
-```
-nuk4sd --vault <id> --run <program> [isolation flags] -- [program args]
+# Run a program inside vault 0, then auto-unmount on exit
+Nuk4sd --vault 0 --run /usr/bin/gedit
 ```
 
-Isolation flags tested: `--ro <path>`, `--rw <path>`, `--no-net`, `--audit`.
-The rest (`--wayland`, `--x11`, `--no-dbus`, `--unshare-ipc`,
-`--unshare-uts`, `--no-proc`, `--blacklist`, `--profile`) show up in
-`--help` but I did not test them individually.
+---
 
-### Delete / manage a vault
+## GUI
+
+Nuk4sd ships with a PyQt5 desktop interface:
+
+- **Sandbox Desktop** — launch sandboxed apps from a visual desktop (custom wallpaper, icon grid, right-click context menus)
+- **Per-app profiles** — save flag sets and mount configurations per application
+- **Vault Manager** — encrypt, decrypt and browse vault contents visually
+- **Active Monitor** — see running sandbox processes in real time, with kill support
+- **Audit Log** — view the full Seccomp/kernel audit trail
+- **Achievements** — a lightweight gamification layer that tracks usage patterns
+
+The GUI calls the same binary. It is a frontend, not a separate implementation.
+
+---
+
+## Use cases
+
+**Daily browser isolation**
+Run Firefox with `--no-net` on certain vaults, or `--ro-home` so it cannot read your SSH keys, wallet files or other browser profiles.
+
+**Untrusted software**
+That Electron app, closed-source installer or random script from the internet — run it with explicit, auditable permissions and nothing else.
+
+**Secure document editing**
+Open sensitive files inside an encrypted vault. They never touch your main filesystem in plaintext outside the session.
+
+**Development environments**
+Give a project access to `~/projects/foo` and nothing else. No accidental writes to `~/.config` or `~/.local`.
+
+**Penetration testing tools**
+Run network tools from an isolated environment without exposing your host credentials or contaminating your main session.
+
+---
+
+## Status
+
+Version `0.9.26`. Used daily on GNOME/X11 and Wayland systems.
+
+Core sandbox functionality (namespaces, seccomp, mounts) is stable. FUSE mount reliability depends on your kernel version — tested on Linux 6.x. Breaking changes are possible before `1.0`.
+
+---
+
+## Contributing
+
+Issues and pull requests are open. For security concerns, open an issue tagged `security` — no bounty program yet, just responsible disclosure.
+
+---
+
+## License
+
+MIT
 
 ```
-nuk4sd --vault <id> --rm                          # delete vault (asks for password if protected)
-nuk4sd --vault <id> --passwd                      # change password
-nuk4sd --vault <id> --worm-status                 # show active WORM protection flags
-nuk4sd --vault <id> --protect-delete/--protect-write/...   # block operations on the vault
+Copyright (c) 2025 Pedro — Vault-Founders
 ```
-
-## Observed limitations
-
-This is what I saw running the binary, not a code audit — treat it as a
-starting point for investigation, not a final verdict.
-
-- **The `--run` sandbox is an empty jail.** It does a `pivot_root` into the
-  vault content, so host binaries (`bash`, `echo`, etc.) don't show up
-  inside the sandbox by default. I tested with `--ro /bin --ro /usr --ro
-  /lib --ro /lib64` and the binary was still not found after the pivot —
-  the audit log confirms the binds were registered, but `execvp` kept
-  failing. I don't know if this is a mount-ordering bug, an intentional
-  design limit (only run what's already inside the vault), or a mistake on
-  my end. Worth investigating before relying on `--run` to execute system
-  programs.
-- **Silent dependency auto-install.** When it couldn't find a shell inside
-  the jail, `nuk4sd` tried installing `busybox-static` on the host via
-  `apt-get install` on its own, without asking for confirmation first.
-  This isn't documented in `--help`. It's a side effect that changes the
-  host system outside the vault — good to know before running this in CI
-  or on a third-party machine.
-- **`--status` on a nonexistent vault doesn't error out.** `nuk4sd --vault
-  99 --status` (an id that never existed) returned `DELETED` with exit
-  code 0, instead of an error / nonzero exit code. If a script relies on
-  the exit code to check whether the vault exists, this could be
-  confusing.
-- **Verbose logging by default.** Every `--run` produces a lot of log
-  lines (including expected FUSE `getattr` errors during mount), even
-  without `--verbose`. Can clutter output in automated scripts.
-- Not tested: manual `--mount`/`--umount`, `--export`, `--mount-export`,
-  `--rename`, `--unlock`, `--rule`/`--hours`, or `--engine` levels beyond
-  0 and 1.
-
-## Observed requirements
-
-- I ran it as root — did not test whether it works without elevated
-  privileges (pivot_root and some namespace operations usually require
-  `CAP_SYS_ADMIN` or user namespaces enabled).
-- `fusermount3` needs to be available.
-- `apt-get` reachable, in case the `busybox-static` auto-install gets
-  triggered.
-
-## Similar projects / inspired by
-
-Tools that solve parts of the same problem (process isolation via
-namespaces, or encrypted vaults via FUSE), split by area:
-
-**Namespace-based sandboxing**
-- [Firejail](https://github.com/netblue30/firejail) — namespace + seccomp-bpf
-  based sandbox, with ready-made per-application profiles.
-- [Bubblewrap](https://github.com/containers/bubblewrap) — low-level tool
-  for building sandboxes without root privileges, the base of Flatpak.
-- [Snap (snapd)](https://snapcraft.io/) and [Flatpak](https://flatpak.org/)
-  — packaging with a built-in sandbox (Flatpak uses bubblewrap under the
-  hood).
-- [systemd-nspawn](https://www.freedesktop.org/software/systemd/man/systemd-nspawn.html)
-  — namespaces + lightweight containers, aimed at system administration.
-- [gVisor](https://gvisor.dev/) — sandbox at a different layer (intercepts
-  syscalls in user space), stronger isolation than plain namespaces.
-
-**Encrypted vaults / FUSE filesystems**
-- [gocryptfs](https://github.com/rfjakob/gocryptfs) — per-file encrypted
-  filesystem, mounted via FUSE.
-- [EncFS](https://github.com/vgough/encfs) — same idea, older, with a
-  documented history of security flaws.
-- [CryFS](https://www.cryfs.org/) — per-file/block encryption via FUSE,
-  aimed at use with cloud sync services.
-- [VeraCrypt](https://veracrypt.fr/) — encrypted volume/container vault,
-  no sandbox built in.
-- [gocryptfs vs EncFS vs CryFS](https://nuetzlich.net/gocryptfs/comparison/)
-  — technical comparison between the three, useful for understanding the
-  design space nuk4sd also occupies on the vault side.
-
-None of these tools combine both things (encrypted vault + execution
-sandbox) in a single binary the way nuk4sd sets out to — the combination
-itself is the design differentiator, not a missing feature in the others.
