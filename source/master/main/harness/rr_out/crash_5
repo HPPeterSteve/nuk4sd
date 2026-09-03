@@ -1,0 +1,1 @@
+--new $'\x00\x01\x02' --path /tmp/$'\x00\x01\x02' --path /tmp/$'\x00\x01\x02' --path /tmp/$'\xff\xfe'
