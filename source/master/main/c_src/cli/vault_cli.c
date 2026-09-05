@@ -2628,7 +2628,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             return 0;
         }
         if (cfg->op_version) {
-            printf("Nuk4sd v0.9.26\n");
+            printf("Nuk4sd v0.9.30\n");
             return 0;
         }
         if (cfg->op_ls) {

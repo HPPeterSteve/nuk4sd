@@ -1294,7 +1294,7 @@ int vault_auth_pid_is_authorized_ffi(pid_t pid) { (void)pid; return 1; }
 #ifndef VAULT_FFI_BUILD
 int main(void) {
     printf("Nuk4sd Security Module\n");
-    printf("Version: 0.9.26\n");
+    printf("Version: 0.9.30\n");
     printf("Compiled: %s %s\n", __DATE__, __TIME__);
     return 0;
 }

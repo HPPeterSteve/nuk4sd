@@ -8,7 +8,7 @@
 
 ## Visão Geral
 
-Versão de estabilização após debug completo do ciclo 0.9.29. Foco em cobertura de testes de regressão, hardening do container runtime e validação de todos os vetores de escape antes de release público.
+Versão de estabilização após debug completo do ciclo 0.9.30. Foco em cobertura de testes de regressão, hardening do container runtime e validação de todos os vetores de escape antes de release público.
 
 ---
 
@@ -23,7 +23,7 @@ Versão de estabilização após debug completo do ciclo 0.9.29. Foco em cobertu
 
 ---
 
-# Nuk4sd v0.9.29 — Release Notes (Em Desenvolvimento)
+# Nuk4sd v0.9.30 — Release Notes (Em Desenvolvimento)
 
 **Data:** 12 de agosto de 2026  
 **Branch:** main  
@@ -33,7 +33,7 @@ Versão de estabilização após debug completo do ciclo 0.9.29. Foco em cobertu
 
 ## Visão Geral
 
-A versão 0.9.29 representa uma reorganização profunda da estrutura de código C, migrando de arquivos monolíticos para uma arquitetura modular por responsabilidade. Introduz o módulo `oci.rs` para integração com o runtime OCI e adiciona suporte a containers com overlay filesystem.
+A versão 0.9.30 representa uma reorganização profunda da estrutura de código C, migrando de arquivos monolíticos para uma arquitetura modular por responsabilidade. Introduz o módulo `oci.rs` para integração com o runtime OCI e adiciona suporte a containers com overlay filesystem.
 
 ---
 
@@ -78,7 +78,7 @@ Bindings FFI atualizados para refletir o novo layout modular do `c_src/`, com in
 - `rust/ffi.rs` — atualizado: bindings para novo layout
 - `rust/main.rs` — atualizado: integrações
 - `build.rs` — atualizado: paths de compilação para nova estrutura
-- `Cargo.toml` — versão 0.9.29
+- `Cargo.toml` — versão 0.9.30
 - `examples/` — novo: exemplos de uso
 
 ---

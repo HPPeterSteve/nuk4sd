@@ -2215,7 +2215,7 @@ static int dispatch(CliConfig *cfg) {
 
     /* ── Sem vault necessário ────────────────────────────────────────────── */
     if (cfg->op_help)    { print_help();                return 0; }
-    if (cfg->op_version) { printf("Nuk4sd v0.9.26\n");  return 0; }
+    if (cfg->op_version) { printf("Nuk4sd v0.9.30\n");  return 0; }
     if (cfg->op_ls)      { vault_list_ffi();            return 0; }
 
     /* ── --new <nome> ────────────────────────────────────────────────────── */
