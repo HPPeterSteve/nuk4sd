@@ -27,8 +27,7 @@ extern "C" {
  *
  *  Retorna 0 em sucesso, -1 em erro.
  * ═══════════════════════════════════════════════════════════════════════════ */
-int mount_overlay(const char *upper, const char *work, const char *lower,
-                  const char *merged, const char *vault_root);
+int mount_overlay(const char *upper, const char *work, const char *lower, const char *merged, const char *vault_root);
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  umount_overlay — lazy-unmount (MNT_DETACH) do ponto de montagem merged.

@@ -1,16 +1,16 @@
 #![cfg(target_os = "linux")]
 
+use cgroups_rs::fs::cgroup::Cgroup;
+use cgroups_rs::fs::cgroup_builder::*;
+use cgroups_rs::fs::{cpu, hierarchies, Controller};
+use cgroups_rs::*;
+use flate2::read::GzDecoder;
+use oci_spec::runtime::Spec;
+use reqwest::blocking::Client;
 use std::fs::File;
 use std::io::copy;
 use std::path::{Path, PathBuf};
-use flate2::read::GzDecoder;
 use tar::Archive;
-use reqwest::blocking::Client;
-use cgroups_rs::*;
-use cgroups_rs::fs::cgroup_builder::*;
-use cgroups_rs::fs::{cpu, hierarchies, Controller};
-use cgroups_rs::fs::cgroup::Cgroup;
-use oci_spec::runtime::Spec;
 
 use std::process::Command;
 
@@ -33,11 +33,12 @@ pub fn pull_and_extract_image(url: &str, target_dir: &Path) -> Result<(), String
         }
 
         println!("Importing local rootfs from {}...", local_path);
-        let tarball = File::open(local_path)
-            .map_err(|e| format!("Failed to open local runtime '{}': {}", local_path, e))?;
+        let tarball =
+            File::open(local_path).map_err(|e| format!("Failed to open local runtime '{}': {}", local_path, e))?;
         let tar = GzDecoder::new(tarball);
         let mut archive = Archive::new(tar);
-        archive.unpack(target_dir)
+        archive
+            .unpack(target_dir)
             .map_err(|e| format!("Failed to unpack local runtime '{}': {}", local_path, e))?;
         println!("Local rootfs extracted to {:?}", target_dir);
         return Ok(());
@@ -97,8 +98,11 @@ pub fn pull_and_extract_image(url: &str, target_dir: &Path) -> Result<(), String
 
     // Fallback: raw tarball HTTP download
     let client = Client::new();
-    let mut response = client.get(url).send().map_err(|e| format!("Failed to download image: {}", e))?;
-    
+    let mut response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("Failed to download image: {}", e))?;
+
     if !response.status().is_success() {
         return Err(format!("Failed to download image, status code: {}", response.status()));
     }
@@ -111,28 +115,36 @@ pub fn pull_and_extract_image(url: &str, target_dir: &Path) -> Result<(), String
     let tar_gz = File::open(&temp_tarball).map_err(|e| format!("Failed to open temp tarball: {}", e))?;
     let tar = GzDecoder::new(tar_gz);
     let mut archive = Archive::new(tar);
-    archive.unpack(target_dir).map_err(|e| format!("Failed to unpack tarball: {}", e))?;
+    archive
+        .unpack(target_dir)
+        .map_err(|e| format!("Failed to unpack tarball: {}", e))?;
     let _ = std::fs::remove_file(temp_tarball);
-    
+
     println!("Image successfully extracted to {:?}", target_dir);
     Ok(())
 }
 
 /// Creates a cgroup v2 with CPU/Memory limits.
-pub fn apply_cgroup_limits(cgroup_name: &str, pid: u64, memory_limit_mb: i64, cpu_shares: u64) -> Result<Cgroup, String> {
+pub fn apply_cgroup_limits(
+    cgroup_name: &str,
+    pid: u64,
+    memory_limit_mb: i64,
+    cpu_shares: u64,
+) -> Result<Cgroup, String> {
     let hier = hierarchies::auto();
     let cg = CgroupBuilder::new(cgroup_name)
         .memory()
-            .memory_hard_limit(memory_limit_mb * 1024 * 1024)
-            .done()
+        .memory_hard_limit(memory_limit_mb * 1024 * 1024)
+        .done()
         .cpu()
-            .shares(cpu_shares)
-            .done()
+        .shares(cpu_shares)
+        .done()
         .build(hier)
         .map_err(|e| format!("Failed to build cgroup: {}", e))?;
 
     let cpus: &cpu::CpuController = cg.controller_of().unwrap();
-    cpus.add_task(&CgroupPid::from(pid)).map_err(|e| format!("Failed to add task to cgroup: {}", e))?;
+    cpus.add_task(&CgroupPid::from(pid))
+        .map_err(|e| format!("Failed to add task to cgroup: {}", e))?;
 
     println!("Cgroup '{}' limits applied to PID {}", cgroup_name, pid);
     Ok(cg)
@@ -147,7 +159,7 @@ pub fn remove_cgroup(cgroup_name: &str) -> Result<(), String> {
 /// Reads a standard OCI config.json to configure the sandbox.
 pub fn parse_oci_manifest(config_path: &str) -> Result<(), String> {
     let spec = Spec::load(config_path).map_err(|e| format!("Failed to load OCI spec: {}", e))?;
-    
+
     println!("--- OCI Spec Loaded ---");
     if let Some(process) = spec.process() {
         println!("Entrypoint: {:?}", process.args());
@@ -156,15 +168,15 @@ pub fn parse_oci_manifest(config_path: &str) -> Result<(), String> {
             println!("Capabilities to bound: {:?}", caps.bounding());
         }
     }
-    
+
     if let Some(root) = spec.root() {
         println!("Rootfs path: {}", root.path().display());
         println!("Readonly rootfs: {}", root.readonly().unwrap_or(false));
     }
-    
+
     if let Some(mounts) = spec.mounts() {
         println!("OCI Mounts defined: {}", mounts.len());
     }
-    
+
     Ok(())
 }

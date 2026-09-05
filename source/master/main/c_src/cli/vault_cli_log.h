@@ -23,20 +23,18 @@
 #ifndef VAULT_CLI_LOG_H
 #define VAULT_CLI_LOG_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 typedef enum {
-    CLI_LOG_CMD   = 0,   /* comando + flags recebidos                */
-    CLI_LOG_INFO  = 1,   /* progresso da operação                    */
-    CLI_LOG_KERN  = 2,   /* interação com kernel (mount, ns, prctl)  */
-    CLI_LOG_SEC   = 3,   /* segurança (auth, caps, seccomp, WORM)    */
-    CLI_LOG_WARN  = 4,   /* aviso não fatal                          */
-    CLI_LOG_ERROR = 5,   /* falha                                    */
+    CLI_LOG_CMD = 0,   /* comando + flags recebidos                */
+    CLI_LOG_INFO = 1,  /* progresso da operação                    */
+    CLI_LOG_KERN = 2,  /* interação com kernel (mount, ns, prctl)  */
+    CLI_LOG_SEC = 3,   /* segurança (auth, caps, seccomp, WORM)    */
+    CLI_LOG_WARN = 4,  /* aviso não fatal                          */
+    CLI_LOG_ERROR = 5, /* falha                                    */
 } CliLogLevel;
-
-
 
 /*
  * cli_log_init()
@@ -57,8 +55,6 @@ void cli_log_init(const char *path);
  */
 void cli_log_close(void);
 
-
-
 /*
  * cli_log(level, module, fmt, ...)
  *
@@ -68,8 +64,7 @@ void cli_log_close(void);
  * Exemplo:
  *   cli_log(CLI_LOG_KERN, "NAMESPACE", "unshare(CLONE_NEWUSER) -> pid=%d", pid);
  */
-void cli_log(CliLogLevel level, const char *module, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
+void cli_log(CliLogLevel level, const char *module, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 /*
  * cli_log_set_verbose(bool)
@@ -78,8 +73,6 @@ void cli_log(CliLogLevel level, const char *module, const char *fmt, ...)
  * Por padrão só WARN e ERROR vão para stderr.
  */
 void cli_log_set_verbose(bool verbose);
-
-
 
 /*
  * cli_log_command()
@@ -130,23 +123,11 @@ void cli_log_worm_status(int32_t vault_id, uint32_t flags);
  *   - bind mounts (ro/rw/blacklist) com paths
  *   - rlimits configurados
  */
-void cli_log_sandbox_config(
-    const char  *exec,
-    const char  *vault_path,
-    bool         no_net,
-    bool         wayland,
-    bool         x11,
-    bool         no_dbus,
-    bool         ro_home,
-    bool         tmp_home,
-    bool         no_proc,
-    bool         unshare_ipc,
-    bool         unshare_uts,
-    bool         new_session,
-    const char  *hostname,
-    int          bind_count,
-    const char **bind_paths,    /* array de paths */
-    const int   *bind_types     /* 0=RO 1=RW 2=BLACKLIST */
+void cli_log_sandbox_config(const char *exec, const char *vault_path, bool no_net, bool wayland, bool x11, bool no_dbus,
+                            bool ro_home, bool tmp_home, bool no_proc, bool unshare_ipc, bool unshare_uts,
+                            bool new_session, const char *hostname, int bind_count,
+                            const char **bind_paths, /* array de paths */
+                            const int *bind_types    /* 0=RO 1=RW 2=BLACKLIST */
 );
 
 /*
@@ -170,8 +151,7 @@ void cli_log_namespace_event(const char *ns_name, int flags, pid_t pid, int resu
  *   flags:  MS_BIND | MS_RDONLY | ... (valor numérico)
  *   result: 0 = sucesso, != 0 = errno
  */
-void cli_log_mount_event(const char *src, const char *dst,
-                         const char *fstype, unsigned long flags, int result);
+void cli_log_mount_event(const char *src, const char *dst, const char *fstype, unsigned long flags, int result);
 
 /*
  * cli_log_pivot_root(new_root, result)
@@ -223,7 +203,6 @@ void cli_log_auth_event(int32_t vault_id, bool success);
  *
  * Loga um setrlimit() aplicado ao processo filho.
  */
-void cli_log_rlimit(const char *resource_name,
-                    unsigned long soft, unsigned long hard);
+void cli_log_rlimit(const char *resource_name, unsigned long soft, unsigned long hard);
 
 #endif /* VAULT_CLI_LOG_H */

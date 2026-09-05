@@ -80,10 +80,7 @@ pub fn decrypt_file(path: &Path, password: &str) -> Result<(), Box<dyn std::erro
 }
 
 /// Derives master key combining password + USB key
-pub fn derive_master_key(
-    password: &str,
-    usb_key_bytes: &[u8],
-) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+pub fn derive_master_key(password: &str, usb_key_bytes: &[u8]) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     let mut combined = Vec::new();
     combined.extend_from_slice(password.as_bytes());
     combined.extend_from_slice(usb_key_bytes);

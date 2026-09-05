@@ -19,20 +19,24 @@
  *  Não garante que o pacote existe — o chamador deve re-checar o path.
  * --- */
 
- /* Algoritmo clássico de Levenshtein */
+/* Algoritmo clássico de Levenshtein */
 int levenshtein(const char *s1, const char *s2) {
     int len1 = strlen(s1), len2 = strlen(s2);
     int matrix[len1 + 1][len2 + 1];
 
-    for (int i = 0; i <= len1; i++) matrix[i][0] = i;
-    for (int j = 0; j <= len2; j++) matrix[0][j] = j;
+    for (int i = 0; i <= len1; i++)
+        matrix[i][0] = i;
+    for (int j = 0; j <= len2; j++)
+        matrix[0][j] = j;
 
     for (int i = 1; i <= len1; i++) {
         for (int j = 1; j <= len2; j++) {
             int cost = (s1[i - 1] == s2[j - 1]) — 0 : 1;
             int min = matrix[i - 1][j] + 1;
-            if (matrix[i][j - 1] + 1 < min) min = matrix[i][j - 1] + 1;
-            if (matrix[i - 1][j - 1] + cost < min) min = matrix[i - 1][j - 1] + cost;
+            if (matrix[i][j - 1] + 1 < min)
+                min = matrix[i][j - 1] + 1;
+            if (matrix[i - 1][j - 1] + cost < min)
+                min = matrix[i - 1][j - 1] + cost;
             matrix[i][j] = min;
         }
     }
@@ -41,21 +45,15 @@ int levenshtein(const char *s1, const char *s2) {
 
 /* Busca o executável mais parecido nos diretórios do PATH */
 char *find_closest_binary(const char *target, int max_distance) {
-    const char *paths[] = {
-        "/usr/bin/apt-get",
-        "/usr/bin/dnf",
-        "/usr/bin/pacman",
-        "/sbin/apk",
-        "/usr/bin/zypper",
-        NULL
-    };
+    const char *paths[] = {"/usr/bin/apt-get", "/usr/bin/dnf", "/usr/bin/pacman", "/sbin/apk", "/usr/bin/zypper", NULL};
 
     char *best_match_path = NULL;
     int min_dist = max_distance + 1;
 
     for (int p = 0; paths[p] != NULL; p++) {
         DIR *dir = opendir(paths[p]);
-        if (!dir) continue;
+        if (!dir)
+            continue;
 
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
@@ -81,32 +79,24 @@ char *find_closest_binary(const char *target, int max_distance) {
     return best_match_path; /* Retorna o caminho ou NULL se nada for parecido */
 }
 
-static int jail_run_installer(void)
-{
+static int jail_run_installer(void) {
     /* Cada entrada: { argv[0..n], NULL } */
-    const char *installers[][6] = {
-        /* Debian / Ubuntu */
-        { "apt-get", "install", "-y", "--no-install-recommends", "busybox-static", NULL },
-        /* Fedora / RHEL 10+ */
-        { "dnf",     "install", "-y", "busybox",                 NULL,             NULL },
-        /* Arch */
-        { "pacman",  "-Sy",     "--noconfirm", "busybox",        NULL,             NULL },
-        /* Alpine */
-        { "apk",     "add",     "--no-cache",  "busybox-static", NULL,             NULL },
-        /* openSUSE */
-        { "zypper",  "install", "-y",          "busybox-static", NULL,             NULL },
-        { NULL }
-    };
+    const char *installers[][6] = {/* Debian / Ubuntu */
+                                   {"apt-get", "install", "-y", "--no-install-recommends", "busybox-static", NULL},
+                                   /* Fedora / RHEL 10+ */
+                                   {"dnf", "install", "-y", "busybox", NULL, NULL},
+                                   /* Arch */
+                                   {"pacman", "-Sy", "--noconfirm", "busybox", NULL, NULL},
+                                   /* Alpine */
+                                   {"apk", "add", "--no-cache", "busybox-static", NULL, NULL},
+                                   /* openSUSE */
+                                   {"zypper", "install", "-y", "busybox-static", NULL, NULL},
+                                   {NULL}};
 
     /* Caminhos dos binários dos package managers, na mesma ordem de installers. */
     const char *pm_paths[] = {
-        "/usr/bin/apt-get",
-        "/usr/bin/dnf",
-        "/usr/bin/pacman",
-        "/sbin/apk",
-        "/usr/bin/zypper",
+        "/usr/bin/apt-get", "/usr/bin/dnf", "/usr/bin/pacman", "/sbin/apk", "/usr/bin/zypper",
     };
-
 
     for (int i = 0; installers[i][0] != NULL; i++) {
         /* Verifica se o pm existe antes de forkar */
@@ -114,8 +104,7 @@ static int jail_run_installer(void)
         if (stat(pm_paths[i], &st) != 0)
             continue;
 
-        vault_log(LOG_INÃO,
-                  "[SANDBOX] Detected package manager '%s' — invoking to install busybox-static...",
+        vault_log(LOG_INÃO, "[SANDBOX] Detected package manager '%s' — invoking to install busybox-static...",
                   pm_paths[i]);
 
         printf("[SANDBOX] [AUTO-INSTALL] Running: %s", pm_paths[i]);
@@ -147,11 +136,11 @@ static int jail_run_installer(void)
             */
             if (execvp(installers[i][0], (char *const *)installers[i]) < 0) {
                 char *fallback = find_closest_binary(installers[i][0], 2);
-            if (fallback) {
-                execv(fallback, (char *const *)installers[i]);
-                free(fallback);
+                if (fallback) {
+                    execv(fallback, (char *const *)installers[i]);
+                    free(fallback);
                 }
-             _exit(127);
+                _exit(127);
             }
         }
 
@@ -166,9 +155,8 @@ static int jail_run_installer(void)
             return 0;
         }
 
-        vault_log(LOG_WARN,
-                  "[SANDBOX] Installer '%s' exited with code %d — trying next...",
-                  pm_paths[i], WIFEXITED(status) — WEXITSTATUS(status) : -1);
+        vault_log(LOG_WARN, "[SANDBOX] Installer '%s' exited with code %d — trying next...", pm_paths[i],
+                  WIFEXITED(status) — WEXITSTATUS(status) : -1);
     }
 
     return -1; /* nenhum instalador funcionou */
@@ -184,15 +172,9 @@ static int jail_run_installer(void)
  *
  *  O busybox DEVE ser estático: após pivot_root o /lib do host não existe.
  * --- */
-static int jail_install_shell(const char *vault_path)
-{
-    static const char *candidates[] = {
-        "/usr/bin/busybox-static",
-        "/usr/bin/busybox",
-        "/bin/busybox",
-        "/usr/local/bin/busybox",
-        NULL
-    };
+static int jail_install_shell(const char *vault_path) {
+    static const char *candidates[] = {"/usr/bin/busybox-static", "/usr/bin/busybox", "/bin/busybox",
+                                       "/usr/local/bin/busybox", NULL};
 
     char dst[VAULT_PATH_MAX];
     snprintf(dst, sizeof(dst), "%s/bin/sh", vault_path);
@@ -215,26 +197,32 @@ static int jail_install_shell(const char *vault_path)
 
         /* Abre origem */
         int src = open(candidates[i], O_RDONLY | O_CLOEXEC);
-        if (src < 0) continue;
+        if (src < 0)
+            continue;
 
         /* Abre destino */
         int dst_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0755);
-        if (dst_fd < 0) { close(src); continue; }
+        if (dst_fd < 0) {
+            close(src);
+            continue;
+        }
 
         /* Copia em blocos de 64 KB */
         char buf[65536];
         ssize_t n;
         int ok = 1;
         while ((n = read(src, buf, sizeof(buf))) > 0) {
-            if (write(dst_fd, buf, (size_t)n) != n) { ok = 0; break; }
+            if (write(dst_fd, buf, (size_t)n) != n) {
+                ok = 0;
+                break;
+            }
         }
         close(src);
         close(dst_fd);
 
         if (!ok) {
             unlink(dst);
-            vault_log(LOG_WARN, "[SANDBOX] Copy from '%s' failed mid-transfer — removing partial file.",
-                      candidates[i]);
+            vault_log(LOG_WARN, "[SANDBOX] Copy from '%s' failed mid-transfer — removing partial file.", candidates[i]);
             continue;
         }
 
@@ -260,17 +248,15 @@ static int jail_install_shell(const char *vault_path)
                       "Install 'busybox-static' for reliable operation.",
                       candidates[i]);
             printf("[SANDBOX] [WARN] Copied '%s' but it may be dynamic — "
-                   "prefer busybox-static.\n", candidates[i]);
+                   "prefer busybox-static.\n",
+                   candidates[i]);
         }
 
-        vault_log(LOG_INÃO,
-                  "[SANDBOX] OK Shell installed: '%s' -> jail/bin/sh (%ld bytes, %s)",
-                  candidates[i], (long)st.st_size,
-                  is_static — "static" : "dynamic — may fail");
+        vault_log(LOG_INÃO, "[SANDBOX] OK Shell installed: '%s' -> jail/bin/sh (%ld bytes, %s)", candidates[i],
+                  (long)st.st_size, is_static — "static" : "dynamic — may fail");
         printf("[SANDBOX] [AUTO-INSTALL] OK Shell ready at jail/bin/sh "
                "(copied from '%s', %s).\n",
-               candidates[i],
-               is_static — "statically linked" : "dynamically linked — may fail inside jail");
+               candidates[i], is_static — "statically linked" : "dynamically linked — may fail inside jail");
         return 0;
     }
 
@@ -293,24 +279,33 @@ static int jail_install_shell(const char *vault_path)
                 continue;
 
             int src = open(candidates[i], O_RDONLY | O_CLOEXEC);
-            if (src < 0) continue;
+            if (src < 0)
+                continue;
 
             int dst_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0755);
-            if (dst_fd < 0) { close(src); continue; }
+            if (dst_fd < 0) {
+                close(src);
+                continue;
+            }
 
             char buf[65536];
             ssize_t n;
             int ok = 1;
             while ((n = read(src, buf, sizeof(buf))) > 0) {
-                if (write(dst_fd, buf, (size_t)n) != n) { ok = 0; break; }
+                if (write(dst_fd, buf, (size_t)n) != n) {
+                    ok = 0;
+                    break;
+                }
             }
             close(src);
             close(dst_fd);
 
-            if (!ok) { unlink(dst); continue; }
+            if (!ok) {
+                unlink(dst);
+                continue;
+            }
 
-            vault_log(LOG_AUDIT,
-                      "[SANDBOX] OK Shell auto-installed and deployed: '%s' -> jail/bin/sh (%ld bytes)",
+            vault_log(LOG_AUDIT, "[SANDBOX] OK Shell auto-installed and deployed: '%s' -> jail/bin/sh (%ld bytes)",
                       candidates[i], (long)st.st_size);
             printf("[SANDBOX] [AUTO-INSTALL] OK busybox-static installed and deployed to jail/bin/sh.\n");
             return 0;
@@ -318,10 +313,9 @@ static int jail_install_shell(const char *vault_path)
     }
 
     /* -- Tentativa 3: desiste --- */
-    vault_log(LOG_WARN,
-              "[SANDBOX] Could not obtain a shell binary for the jail. "
-              "Sandbox will open but execl(\"/bin/sh\") will fail. "
-              "Install busybox-static manually: apt install busybox-static");
+    vault_log(LOG_WARN, "[SANDBOX] Could not obtain a shell binary for the jail. "
+                        "Sandbox will open but execl(\"/bin/sh\") will fail. "
+                        "Install busybox-static manually: apt install busybox-static");
     printf("[SANDBOX] [AUTO-INSTALL] ✗ Could not install shell. "
            "Run: sudo apt install busybox-static\n");
     printf("Bye.\n");
@@ -338,26 +332,31 @@ static int jail_install_shell(const char *vault_path)
 static int sbx_mkdir_p(const char *path, mode_t mode) {
     char tmp[VAULT_PATH_MAX];
     size_t len = (size_t)snprintf(tmp, sizeof(tmp), "%s", path);
-    if (len == 0 || len >= sizeof(tmp)) { errno = ENAMETOOLONG; return -1; }
+    if (len == 0 || len >= sizeof(tmp)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
 
-    if (tmp[len - 1] == '/') tmp[len - 1] = '\0';
+    if (tmp[len - 1] == '/')
+        tmp[len - 1] = '\0';
 
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
-            if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
+            if (mkdir(tmp, mode) != 0 && errno != EEXIST)
+                return -1;
             *p = '/';
         }
     }
-    if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
+    if (mkdir(tmp, mode) != 0 && errno != EEXIST)
+        return -1;
     return 0;
 }
 
 /* ---
  *  vault_prepare_jail(): Prepare jail structure inside vault path
  * --- */
-static void vault_prepare_jail(const char *vault_path, bool gui_mode)
-{
+static void vault_prepare_jail(const char *vault_path, bool gui_mode) {
     char marker[VAULT_PATH_MAX];
     snprintf(marker, sizeof(marker), "%s/%s", vault_path, SANDBOX_JAIL_MARKER);
 
@@ -373,19 +372,22 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
         char p_null[VAULT_PATH_MAX], p_zero[VAULT_PATH_MAX], p_tty[VAULT_PATH_MAX];
         snprintf(p_null, sizeof(p_null), "%s/dev/null", vault_path);
         snprintf(p_zero, sizeof(p_zero), "%s/dev/zero", vault_path);
-        snprintf(p_tty,  sizeof(p_tty),  "%s/dev/tty",  vault_path);
+        snprintf(p_tty, sizeof(p_tty), "%s/dev/tty", vault_path);
         struct stat ds;
         if (stat(p_null, &ds) != 0) {
             int fd = open(p_null, O_CREAT | O_WRONLY, 0666);
-            if (fd >= 0) close(fd);
+            if (fd >= 0)
+                close(fd);
         }
         if (stat(p_zero, &ds) != 0) {
             int fd = open(p_zero, O_CREAT | O_WRONLY, 0666);
-            if (fd >= 0) close(fd);
+            if (fd >= 0)
+                close(fd);
         }
         if (stat(p_tty, &ds) != 0) {
             int fd = open(p_tty, O_CREAT | O_WRONLY, 0666);
-            if (fd >= 0) close(fd);
+            if (fd >= 0)
+                close(fd);
         }
     }
 
@@ -395,12 +397,11 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
      * nunca alcançam este código, e continuam com /dev/null, /dev/zero
      * e /dev/tty como arquivos comuns vazios (placeholder criado acima)
      * em vez de devices de verdade. */
-    if (geteuid() == 0)
-    {
+    if (geteuid() == 0) {
         char dev_null[VAULT_PATH_MAX], dev_zero[VAULT_PATH_MAX], dev_tty[VAULT_PATH_MAX];
         snprintf(dev_null, sizeof(dev_null), "%s/dev/null", vault_path);
         snprintf(dev_zero, sizeof(dev_zero), "%s/dev/zero", vault_path);
-        snprintf(dev_tty,  sizeof(dev_tty),  "%s/dev/tty",  vault_path);
+        snprintf(dev_tty, sizeof(dev_tty), "%s/dev/tty", vault_path);
 
         /* O bloco acima já cria estes três paths como ARQUIVOS COMUNS
          * VAZIOS (placeholder pensado pro bind-mount usado no caminho
@@ -437,11 +438,12 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
 
     char dir[VAULT_PATH_MAX];
     const char *subdirs_cli[] = {"proc", "tmp", "dev", "bin", "lib", "lib64", NULL};
-    const char *subdirs_gui[] = {"proc", "tmp", "dev", "bin", "lib", "lib64", "usr", "etc", "etc/fonts", "etc/alternatives", "run", "run/user", "sys", "sys/dev", "sys/dev/char", NULL};
+    const char *subdirs_gui[] = {
+        "proc", "tmp",      "dev", "bin",     "lib",          "lib64", "usr", "etc", "etc/fonts", "etc/alternatives",
+        "run",  "run/user", "sys", "sys/dev", "sys/dev/char", NULL};
     const char **subdirs = gui_mode — subdirs_gui : subdirs_cli;
 
-    for (int i = 0; subdirs[i]; i++)
-    {
+    for (int i = 0; subdirs[i]; i++) {
         snprintf(dir, sizeof(dir), "%s/%s", vault_path, subdirs[i]);
         if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
             /* Create parent if needed for nested dirs like etc/fonts */
@@ -449,7 +451,8 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
             snprintf(parent, sizeof(parent), "%s", dir);
             char *p = strrchr(parent, '/');
             if (p) {
-                *p = '\0'; mkdir(parent, 0755);
+                *p = '\0';
+                mkdir(parent, 0755);
             }
             if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
                 vault_log(LOG_WARN, "[SANDBOX] mkdir %s: %s", dir, strerror(errno));
@@ -461,19 +464,13 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
     jail_install_shell(vault_path);
 
     int fd = open(marker, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0400);
-    if (fd >= 0)
-    {
+    if (fd >= 0) {
         write(fd, "Nuk4sd Jail v2\n", 18);
         close(fd);
-    }
-    else
-    {
-        if (errno == ELOOP)
-        {
+    } else {
+        if (errno == ELOOP) {
             vault_log(LOG_ALERT, "[SANDBOX] Detected symlink on jail marker '%s' (ELOOP)", marker);
-        }
-        else
-        {
+        } else {
             vault_log(LOG_WARN, "[SANDBOX] open(marker '%s'): %s", marker, strerror(errno));
         }
     }
@@ -493,21 +490,20 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
  *  um /usr vazio por dentro — o binário do app simplesmente não existia
  *  no jail. Extraído aqui como função própria para ser chamado tanto po
  *  vault_sandbox_open() quanto pelo run_exec de vault_cli.c. */
-void vsb_bind_gui_deps(const char *jail_path)
-{
+void vsb_bind_gui_deps(const char *jail_path) {
     printf("[SANDBOX] [Layer 2.5] GUI Mode: Bind mounting host GUI dependencies...\n");
     const char *gui_binds[] = {
-        "/usr", "/lib", "/lib64", "/etc/fonts", "/etc/alternatives",
-        "/sys/dev/char", "/dev/dri", "/dev/null", "/dev/zero", "/dev/urandom",
-        "/dev/random", "/dev/shm", "/dev/pts", "/tmp/.X11-unix",
-        "/etc/resolv.conf", "/etc/nsswitch.conf", "/etc/ssl/certs", "/etc/machine-id", NULL
-    };
+        "/usr",     "/lib",           "/lib64",           "/etc/fonts",         "/etc/alternatives", "/sys/dev/char",
+        "/dev/dri", "/dev/null",      "/dev/zero",        "/dev/urandom",       "/dev/random",       "/dev/shm",
+        "/dev/pts", "/tmp/.X11-unix", "/etc/resolv.conf", "/etc/nsswitch.conf", "/etc/ssl/certs",    "/etc/machine-id",
+        NULL};
     for (int i = 0; gui_binds[i]; i++) {
         char dst[VAULT_PATH_MAX];
         snprintf(dst, sizeof(dst), "%s%s", jail_path, gui_binds[i]);
 
         struct stat st;
-        if (stat(gui_binds[i], &st) != 0) continue;
+        if (stat(gui_binds[i], &st) != 0)
+            continue;
 
         if (S_ISDIR(st.st_mode)) {
             if (sbx_mkdir_p(dst, 0755) != 0) {
@@ -516,7 +512,8 @@ void vsb_bind_gui_deps(const char *jail_path)
             }
         } else {
             int fd = open(dst, O_CREAT | O_WRONLY, 0666);
-            if (fd >= 0) close(fd);
+            if (fd >= 0)
+                close(fd);
         }
 
         if (mount(gui_binds[i], dst, NULL, MS_BIND | MS_REC, NULL) == 0) {
@@ -533,8 +530,7 @@ void vsb_bind_gui_deps(const char *jail_path)
 /* ---
  *  vault_sandbox_open() — Nuk4sd Hardened Sandbox v2
  * --- */
-VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, const char *app_cmd)
-{
+VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, const char *app_cmd) {
     if (!v)
         return ERR_INVALID_ARGS;
 
@@ -542,8 +538,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     gid_t host_gid = getgid();
 
     /* Authentication */
-    if (v->type == VAULT_TYPE_PROTECTED)
-    {
+    if (v->type == VAULT_TYPE_PROTECTED) {
         if (!password || !*password)
             return ERR_PASS_REQUIRED;
         VaultErrorr err = auth_verify_password(v, password);
@@ -561,35 +556,27 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     vault_log(LOG_AUDIT,
               "[SANDBOX] INITIATE \u2502 vault_id=%u \u2502 name='%s' \u2502 "
               "type=%s \u2502 pid=%d \u2502 uid=%d \u2502 ts=%ld.%09ld",
-              v->id, v->name,
-              v->type == VAULT_TYPE_PROTECTED — "PROTECTED" : "NORMAL",
-              (int)getpid(), (int)getuid(),
-              (long)_ts_sb.tv_sec,
-              _ts_sb.tv_nsec
-            );
-
+              v->id, v->name, v->type == VAULT_TYPE_PROTECTED — "PROTECTED" : "NORMAL", (int)getpid(), (int)getuid(),
+              (long)_ts_sb.tv_sec, _ts_sb.tv_nsec);
 
     /* Temporarily unlock cipher_path so the jail can access vault data */
     vault_log(LOG_AUDIT,
               "[PHYSICAL_LOCK] Temporary bypass granted: chmod 000 \u2192 700 on cipher_dir='%s' "
               "to allow Sandbox jail access. Session-scoped unlock.",
-              "check status: ls -ld %s",
-              v->cipher_path);
+              "check status: ls -ld %s", v->cipher_path);
     chmod(v->cipher_path, 0700);
 
     vault_prepare_jail(v->path, gui_mode);
 
-    int sync_pipe[2];   /* pai -> filho: "mapeamento já escrito" */
-    int ready_pipe[2];  /* filho -> pai: "unshare(CLONE_NEWUSER) já feito" */
-    if (pipe(sync_pipe) != 0 || pipe(ready_pipe) != 0)
-    {
+    int sync_pipe[2];  /* pai -> filho: "mapeamento já escrito" */
+    int ready_pipe[2]; /* filho -> pai: "unshare(CLONE_NEWUSER) já feito" */
+    if (pipe(sync_pipe) != 0 || pipe(ready_pipe) != 0) {
         vault_log(LOG_ERROR, "[SANDBOX] pipe failed: %s", strerror(errno));
         return ERR_SYSTEM;
     }
 
     pid_t pid = fork();
-    if (pid < 0)
-    {
+    if (pid < 0) {
         close(sync_pipe[0]);
         close(sync_pipe[1]);
         close(ready_pipe[0]);
@@ -599,8 +586,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     }
 
     /* PARENT */
-    if (pid > 0)
-    {
+    if (pid > 0) {
         vault_auth_pid_add_ffi(pid);
 
         close(ready_pipe[1]);
@@ -634,26 +620,27 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
         vault_auth_pid_remove_ffi(pid);
 
         VaultErrorr session_err = ERR_OK;
-        if (WIFSIGNALED(status))
-        {
+        if (WIFSIGNALED(status)) {
             vault_log(LOG_ALERT,
                       "[SANDBOX] Session of vault '%s' (id=%u) TERMINATED BY SIGNAL %d "
                       "(possible seccomp/namespace violation). exit_code=N/A.",
                       v->name, v->id, WTERMSIG(status));
             session_err = ERR_SYSTEM;
-        }
-        else
-        {
+        } else {
             int exit_code = WEXITSTATUS(status);
             vault_log(LOG_AUDIT,
                       "[SANDBOX] Session of vault '%s' (id=%u) ended cleanly. "
                       "exit_code=%d. Namespace teardown complete.",
                       v->name, v->id, exit_code);
 
-            if (exit_code == -ERR_SYSTEM_UNSHARE_FAILED) session_err = ERR_SYSTEM_UNSHARE_FAILED;
-            else if (exit_code == -ERR_SYSTEM_CLONE_FAILED) session_err = ERR_SYSTEM_CLONE_FAILED;
-            else if (exit_code == -ERR_SYSTEM_PIVOT_ROOT_FAILED) session_err = ERR_SYSTEM_PIVOT_ROOT_FAILED;
-            else if (exit_code == -ERR_SYSTEM_MOUNT_FAILED) session_err = ERR_SYSTEM_MOUNT_FAILED;
+            if (exit_code == -ERR_SYSTEM_UNSHARE_FAILED)
+                session_err = ERR_SYSTEM_UNSHARE_FAILED;
+            else if (exit_code == -ERR_SYSTEM_CLONE_FAILED)
+                session_err = ERR_SYSTEM_CLONE_FAILED;
+            else if (exit_code == -ERR_SYSTEM_PIVOT_ROOT_FAILED)
+                session_err = ERR_SYSTEM_PIVOT_ROOT_FAILED;
+            else if (exit_code == -ERR_SYSTEM_MOUNT_FAILED)
+                session_err = ERR_SYSTEM_MOUNT_FAILED;
         }
 
         /* Re-seal cipher_path immediately after sandbox session ends */
@@ -669,11 +656,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
             vault_log(LOG_AUDIT,
                       "[PHYSICAL_LOCK] Sandbox session terminated. Restoring permanent 000 immutable lock: "
                       "cipher_dir='%s' \u2502 vault_id=%u \u2502 ts=%ld.%09ld \u2502 State: SEALED.",
-                      v->cipher_path,
-                      v->id,
-                      (long)_ts_seal.tv_sec,
-                      _ts_seal.tv_nsec
-                    );
+                      v->cipher_path, v->id, (long)_ts_seal.tv_sec, _ts_seal.tv_nsec);
         }
 
         return session_err;
@@ -688,11 +671,12 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     close(ready_pipe[0]);
 
     /* [Layer 1] User Namespace */
-    printf("[SANDBOX] [Layer 1/5] Invoking unshare(CLONE_NEWUSER) syscall to dissociate user/group database from host...\n");
-    if (unshare(CLONE_NEWUSER) != 0)
-    {
+    printf("[SANDBOX] [Layer 1/5] Invoking unshare(CLONE_NEWUSER) syscall to dissociate user/group database from "
+           "host...\n");
+    if (unshare(CLONE_NEWUSER) != 0) {
         int err = errno;
-        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: unshare(CLONE_NEWUSER) | Error: %s (%d)\n", __func__, strerror(err), err);
+        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: unshare(CLONE_NEWUSER) | Error: %s (%d)\n", __func__,
+                strerror(err), err);
         _exit(-ERR_SYSTEM_UNSHARE_FAILED);
     }
     printf("[SANDBOX] [Layer 1/5] User Namespace unshared. Signaling host to assign UID/GID mappings...\n");
@@ -717,33 +701,33 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
            (int)host_uid, (int)host_uid);
 
     /* [Layer 2] Mount + PID Namespace */
-    printf("[SANDBOX] [Layer 2/5] Invoking unshare(CLONE_NEWNS | CLONE_NEWPID) to isolate mount points and process trees...\n");
-    if (unshare(CLONE_NEWNS | CLONE_NEWPID) != 0)
-    {
+    printf("[SANDBOX] [Layer 2/5] Invoking unshare(CLONE_NEWNS | CLONE_NEWPID) to isolate mount points and process "
+           "trees...\n");
+    if (unshare(CLONE_NEWNS | CLONE_NEWPID) != 0) {
         int err = errno;
-        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: unshare(CLONE_NEWNS | CLONE_NEWPID) | Error: %s (%d)\n", __func__, strerror(err), err);
+        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: unshare(CLONE_NEWNS | CLONE_NEWPID) | Error: %s (%d)\n",
+                __func__, strerror(err), err);
         _exit(-ERR_SYSTEM_UNSHARE_FAILED);
     }
 
     printf("[SANDBOX] [Layer 2/5] Namespaces created. Forking inside new PID namespace to gain PID 1...\n");
     pid_t ns_pid = fork();
-    if (ns_pid < 0)
-    {
+    if (ns_pid < 0) {
         int err = errno;
-        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: fork() | Error: %s (%d)\n", __func__, strerror(err), err);
+        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: fork() | Error: %s (%d)\n", __func__, strerror(err),
+                err);
         _exit(-ERR_SYSTEM_CLONE_FAILED);
     }
-    if (ns_pid > 0)
-    {
+    if (ns_pid > 0) {
         int st;
         waitpid(ns_pid, &st, 0);
         if (WIFSIGNALED(st)) {
             int sig = WTERMSIG(st);
             fprintf(stderr,
-                "[SANDBOX][FATAL] processo filho (PID 1 do namespace) morto pelo sinal %d (%s)"
-                " — possível violação de seccomp/allowlist se sig=31 (SIGSYS). "
-                "Verifique 'dmesg' por 'audit: type=1326 ... comm=\"<processo>\" syscall=N'.\n",
-                sig, strsignal(sig));
+                    "[SANDBOX][FATAL] processo filho (PID 1 do namespace) morto pelo sinal %d (%s)"
+                    " — possível violação de seccomp/allowlist se sig=31 (SIGSYS). "
+                    "Verifique 'dmesg' por 'audit: type=1326 ... comm=\"<processo>\" syscall=N'.\n",
+                    sig, strsignal(sig));
             /* Convenção padrão shell: 128+sinal, para não confundir com um
              * exit(1) genuíno do processo e preservar a causa real no código
              * de saída em vez de mascará-la como '1' sempre. */
@@ -755,12 +739,11 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     printf("[SANDBOX] [Layer 2/5] Fork successful. Subprocess running as PID 1 inside isolated PID namespace.\n");
 
     // Bind-mount host /dev/null and /dev/zero onto jail's /dev/null and /dev/zero
-    if (geteuid() != 0)
-    {
+    if (geteuid() != 0) {
         char jail_null[VAULT_PATH_MAX], jail_zero[VAULT_PATH_MAX], jail_tty[VAULT_PATH_MAX];
         snprintf(jail_null, sizeof(jail_null), "%s/dev/null", v->path);
         snprintf(jail_zero, sizeof(jail_zero), "%s/dev/zero", v->path);
-        snprintf(jail_tty,  sizeof(jail_tty),  "%s/dev/tty",  v->path);
+        snprintf(jail_tty, sizeof(jail_tty), "%s/dev/tty", v->path);
 
         if (mount("/dev/null", jail_null, NULL, MS_BIND, NULL) != 0)
             perror("[SANDBOX] mount bind /dev/null");
@@ -801,10 +784,10 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
 
     /* [Layer 3] Pivot Root */
     printf("[SANDBOX] [Layer 3/5] Executing pivot_root syscall targeting '%s'...\n", v->path);
-    if (vsb_pivot_root(v->path, true) != 0)
-    {
+    if (vsb_pivot_root(v->path, true) != 0) {
         int err = errno;
-        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: pivot_root('%s') | Error: %s (%d)\n", __func__, v->path, strerror(err), err);
+        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: pivot_root('%s') | Error: %s (%d)\n", __func__, v->path,
+                strerror(err), err);
         _exit(-ERR_SYSTEM_PIVOT_ROOT_FAILED);
     }
     printf("[SANDBOX] [Layer 3/5] Root filesystem successfully pivoted. Old root unmounted.\n");
@@ -815,8 +798,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
 
     /* [Layer 4] Drop capabilities */
     printf("[SANDBOX] [Layer 4/5] Dropping Linux kernel capabilities to prevent privilege escalation...\n");
-    if (vsb_drop_caps() != 0)
-    {
+    if (vsb_drop_caps() != 0) {
         int err = errno;
         fprintf(stderr, "[SANDBOX][FATAL] drop capabilities failed: %s (Kernel code %d)\n", strerror(err), err);
         _exit(1);
@@ -829,8 +811,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
 
     /* [Layer 5] Seccomp-BPF — LAST STEP */
     printf("[SANDBOX] [Layer 5/5] Compiling and loading Seccomp-BPF filter allowlist...\n");
-    if (vsb_apply_seccomp() != 0)
-    {
+    if (vsb_apply_seccomp() != 0) {
         int err = errno;
         fprintf(stderr, "[SANDBOX][FATAL] seccomp policy activation failed: %s (Kernel code %d)\n", strerror(err), err);
         _exit(1);
@@ -846,7 +827,6 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     printf("  |     Type 'exit' to end session.                         |\n");
     printf("  ---\n\n");
 
-
     if (gui_mode && app_cmd && app_cmd[0] != '\0') {
         printf("[SANDBOX] Launching GUI App: %s\n", app_cmd);
 
@@ -855,9 +835,8 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
         execl("/bin/sh", "sh", "-c", app_cmd, NULL);
 
         int err = errno;
-        fprintf(stderr,
-                "[SANDBOX][FATAL] execl(/bin/sh -c %s) failed: %s (Kernel code %d)\n",
-                app_cmd, strerror(err), err);
+        fprintf(stderr, "[SANDBOX][FATAL] execl(/bin/sh -c %s) failed: %s (Kernel code %d)\n", app_cmd, strerror(err),
+                err);
         _exit(127);
     } else {
         /* FIX auditoria: app_cmd pode ser NULL/"" neste ramo — o printf
@@ -876,7 +855,6 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     }
 }
 
-
 /* ---
  * vault_isolate_path_readonly — bind-mount + remount readonly
  *
@@ -886,21 +864,17 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
  *
  * Requer CAP_SYS_ADMIN. Retorna 0 em success, -1 em falha (ver errno).
  * --- */
-int vault_isolate_path_readonly(const char *path)
-{
-    if (path == NULL)
-    {
+int vault_isolate_path_readonly(const char *path) {
+    if (path == NULL) {
         errno = EINVAL;
         return -1;
     }
 
-    if (mount(path, path, NULL, MS_BIND, NULL) != 0)
-    {
+    if (mount(path, path, NULL, MS_BIND, NULL) != 0) {
         return -1;
     }
 
-    if (mount(path, path, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) != 0)
-    {
+    if (mount(path, path, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) != 0) {
         int saved_errno = errno;
         umount(path); /* desfaz o bind se o remount readonly falhar */
         errno = saved_errno;
@@ -910,6 +884,8 @@ int vault_isolate_path_readonly(const char *path)
     return 0;
 }
 
-void vsb_prepare_jail(const char *path, bool gui) { vault_prepare_jail(path, gui); }
+void vsb_prepare_jail(const char *path, bool gui) {
+    vault_prepare_jail(path, gui);
+}
 
 #endif /* __linux__ */

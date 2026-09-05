@@ -24,11 +24,7 @@ extern "C" {
 }
 
 pub fn run() {
-    println!(
-        "{}",
-        "Nuk4sd — type --help for commands, exit to quit."
-            .bright_green()
-    );
+    println!("{}", "Nuk4sd — type --help for commands, exit to quit.".bright_green());
 
     let mut rl = DefaultEditor::new().unwrap();
     let prompt = "Nuk4sd> ".bright_blue().to_string();
@@ -48,10 +44,7 @@ pub fn run() {
                     /* Shell passthrough: !ls, !cat arquivo, etc. */
                     s if s.starts_with('!') => {
                         let cmd = &s[1..];
-                        let _ = std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(cmd)
-                            .status();
+                        let _ = std::process::Command::new("sh").arg("-c").arg(cmd).status();
                     }
 
                     /* Tudo mais vai pro core C como se fosse argv CLI */
@@ -63,8 +56,7 @@ pub fn run() {
                         }
 
                         /* Prefixa com "Nuk4sd" para simular argv[0] */
-                        let mut full: Vec<String> =
-                            vec!["Nuk4sd".to_string()];
+                        let mut full: Vec<String> = vec!["Nuk4sd".to_string()];
                         full.extend(tokens);
 
                         let c_args: Vec<CString> = full
@@ -72,14 +64,10 @@ pub fn run() {
                             .map(|s| CString::new(s.as_str()).unwrap_or_default())
                             .collect();
 
-                        let c_ptrs: Vec<*const c_char> =
-                            c_args.iter().map(|s| s.as_ptr()).collect();
+                        let c_ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
 
                         unsafe {
-                            vault_cli_parse_and_exec(
-                                c_ptrs.len() as c_int,
-                                c_ptrs.as_ptr(),
-                            );
+                            vault_cli_parse_and_exec(c_ptrs.len() as c_int, c_ptrs.as_ptr());
                         }
                     }
                 }

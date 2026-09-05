@@ -42,10 +42,12 @@
  *    - probe colapsado até "/" sem achar componente existente -> retorna 0.
  * ═══════════════════════════════════════════════════════════════════════════ */
 static int overlay_path_is_safe(const char *vault_root, const char *path) {
-    if (!vault_root || !path) return 0;
+    if (!vault_root || !path)
+        return 0;
 
     char resolved_root[PATH_MAX];
-    if (!realpath(vault_root, resolved_root)) return 0;
+    if (!realpath(vault_root, resolved_root))
+        return 0;
 
     char probe[PATH_MAX];
     if (snprintf(probe, sizeof(probe), "%s", path) >= (int)sizeof(probe))
@@ -60,12 +62,15 @@ static int overlay_path_is_safe(const char *vault_root, const char *path) {
     int depth = 0;
     while (!realpath(probe, resolved_probe)) {
         if (++depth > SYMLOOP_MAX) {
-            vault_log(LOG_WARN, "[OVERLAY] path_is_safe: limite de profundidade atingido — possível loop de symlink em '%s'", path);
+            vault_log(LOG_WARN,
+                      "[OVERLAY] path_is_safe: limite de profundidade atingido — possível loop de symlink em '%s'",
+                      path);
             return 0;
         }
         char *slash = strrchr(probe, '/');
         /* Chegou na raiz (slash == probe -> "/") ou sem barra -> para */
-        if (!slash || slash == probe) return 0;
+        if (!slash || slash == probe)
+            return 0;
         *slash = '\0';
     }
 
@@ -81,7 +86,8 @@ static int ensure_dir(const char *path) {
         vault_log(LOG_ERROR, "[OVERLAY] ensure_dir: NULL path");
         return -1;
     }
-    if (access(path, F_OK) == 0) return 0;
+    if (access(path, F_OK) == 0)
+        return 0;
     if (mkdir(path, 0755) == -1) {
         vault_log(LOG_ERROR, "[OVERLAY] mkdir '%s': %s", path, strerror(errno));
         return -1;
@@ -97,10 +103,13 @@ static int ensure_dir(const char *path) {
  *  de uma fonte confiável e pré-validada — nunca com paths vindos de flag
  *  de usuário ou config carregada de disco.
  * ═══════════════════════════════════════════════════════════════════════════ */
-int mount_overlay(const char *upper, const char *work, const char *lower,
-                  const char *merged, const char *vault_root) {
+int mount_overlay(const char *upper, const char *work, const char *lower, const char *merged, const char *vault_root) {
 #ifndef __linux__
-    (void)upper; (void)work; (void)lower; (void)merged; (void)vault_root;
+    (void)upper;
+    (void)work;
+    (void)lower;
+    (void)merged;
+    (void)vault_root;
     return -1; /* Not implemented on this platform */
 #else
     if (!upper || !work || !lower || !merged) {
@@ -109,22 +118,24 @@ int mount_overlay(const char *upper, const char *work, const char *lower,
     }
 
     if (vault_root) {
-        const char *dirs[]  = { lower, upper, work, merged };
-        const char *names[] = { "lowerdir", "upperdir", "workdir", "merged" };
+        const char *dirs[] = {lower, upper, work, merged};
+        const char *names[] = {"lowerdir", "upperdir", "workdir", "merged"};
         for (int i = 0; i < 4; i++) {
             if (!overlay_path_is_safe(vault_root, dirs[i])) {
-                vault_log(LOG_ERROR,
-                    "[OVERLAY] %s '%s': path escapes vault jail — recusando",
-                    names[i], dirs[i]);
+                vault_log(LOG_ERROR, "[OVERLAY] %s '%s': path escapes vault jail — recusando", names[i], dirs[i]);
                 return -1;
             }
         }
     }
 
-    if (ensure_dir(lower)  == -1) return -1;
-    if (ensure_dir(upper)  == -1) return -1;
-    if (ensure_dir(work)   == -1) return -1;
-    if (ensure_dir(merged) == -1) return -1;
+    if (ensure_dir(lower) == -1)
+        return -1;
+    if (ensure_dir(upper) == -1)
+        return -1;
+    if (ensure_dir(work) == -1)
+        return -1;
+    if (ensure_dir(merged) == -1)
+        return -1;
 
     /* Tamanho dinmico: 4 paths de até VAULT_PATH_MAX + prefixos de chaves.
      * Truncamento checado explicitamente — snprintf silencioso passaria
@@ -136,9 +147,7 @@ int mount_overlay(const char *upper, const char *work, const char *lower,
      * Nuk4sd após unshare(CLONE_NEWUSER)). Tentamos com ela primeiro; se
      * o kernel for antigo (<5.11) e não reconhecer a opção, EINVAL -> fallback
      * sem ela. Cobre as duas famílias de kernel sem detectar versão. */
-    int n = snprintf(opts, sizeof(opts),
-                     "lowerdir=%s,upperdir=%s,workdir=%s,userxattr",
-                     lower, upper, work);
+    int n = snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s,userxattr", lower, upper, work);
     if (n < 0 || (size_t)n >= sizeof(opts)) {
         vault_log(LOG_ERROR, "[OVERLAY] mount options truncadas — paths muito longos");
         return -1;
@@ -155,15 +164,15 @@ int mount_overlay(const char *upper, const char *work, const char *lower,
          * não-privilegiado (corrigido no 5.13). Nesta família, a montagem
          * pode falhar com outros erros mesmo sem userxattr — o chamador
          * deve verificar o resultado. */
-        n = snprintf(opts, sizeof(opts),
-                     "lowerdir=%s,upperdir=%s,workdir=%s",
-                     lower, upper, work);
+        n = snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work);
         if (n < 0 || (size_t)n >= sizeof(opts)) {
             vault_log(LOG_ERROR, "[OVERLAY] mount options truncadas — paths muito longos");
             return -1;
         }
         if (mount("overlay", merged, "overlay", 0, opts) == 0) {
-            vault_log(LOG_WARN, "[OVERLAY] montado SEM userxattr (kernel < 5.11) em '%s' — xattrs de overlay não disponíveis", merged);
+            vault_log(LOG_WARN,
+                      "[OVERLAY] montado SEM userxattr (kernel < 5.11) em '%s' — xattrs de overlay não disponíveis",
+                      merged);
             return 0;
         }
     }
@@ -231,9 +240,9 @@ int overlay_fs_init(const VaultContainer *container, const Vault *vault) {
      * Para restaurar: --white-list -r -> whitelist_excluded = 0. */
     if (container->sealed && container->whitelist_excluded) {
         vault_log(LOG_ERROR,
-            "[OVERLAY] container '%s' selado com whitelist excluída (--white-list -e)"
-            " — montagem recusada",
-            container->path);
+                  "[OVERLAY] container '%s' selado com whitelist excluída (--white-list -e)"
+                  " — montagem recusada",
+                  container->path);
         return -1;
     }
 
@@ -242,9 +251,9 @@ int overlay_fs_init(const VaultContainer *container, const Vault *vault) {
      * WORM_PROTECT_SCAN  -> super-flag: imutabilidade total, sem upperdir. */
     if (worm_check(vault, WORM_PROTECT_WRITE)) {
         vault_log(LOG_WARN,
-            "[OVERLAY] WORM ativo (flags=0x%x): container '%s' é somente-leitura"
-            " — montagem com upperdir recusada",
-            vault->worm_flags, container->path);
+                  "[OVERLAY] WORM ativo (flags=0x%x): container '%s' é somente-leitura"
+                  " — montagem com upperdir recusada",
+                  vault->worm_flags, container->path);
         return -1;
     }
 
@@ -255,23 +264,25 @@ int overlay_fs_init(const VaultContainer *container, const Vault *vault) {
     char merged[VAULT_PATH_MAX];
 
     int r;
-    r = snprintf(lower,  sizeof(lower),  "%s/lower",  container->path);
-    if (r < 0 || r >= (int)sizeof(lower))  goto path_too_long;
+    r = snprintf(lower, sizeof(lower), "%s/lower", container->path);
+    if (r < 0 || r >= (int)sizeof(lower))
+        goto path_too_long;
 
-    r = snprintf(upper,  sizeof(upper),  "%s/upper",  container->path);
-    if (r < 0 || r >= (int)sizeof(upper))  goto path_too_long;
+    r = snprintf(upper, sizeof(upper), "%s/upper", container->path);
+    if (r < 0 || r >= (int)sizeof(upper))
+        goto path_too_long;
 
-    r = snprintf(work,   sizeof(work),   "%s/work",   container->path);
-    if (r < 0 || r >= (int)sizeof(work))   goto path_too_long;
+    r = snprintf(work, sizeof(work), "%s/work", container->path);
+    if (r < 0 || r >= (int)sizeof(work))
+        goto path_too_long;
 
     r = snprintf(merged, sizeof(merged), "%s/merged", container->path);
-    if (r < 0 || r >= (int)sizeof(merged)) goto path_too_long;
+    if (r < 0 || r >= (int)sizeof(merged))
+        goto path_too_long;
 
     return mount_overlay(upper, work, lower, merged, container->path);
 
 path_too_long:
-    vault_log(LOG_ERROR,
-        "[OVERLAY] container path muito longo para derivar subpaths: '%s'",
-        container->path);
+    vault_log(LOG_ERROR, "[OVERLAY] container path muito longo para derivar subpaths: '%s'", container->path);
     return -1;
 }

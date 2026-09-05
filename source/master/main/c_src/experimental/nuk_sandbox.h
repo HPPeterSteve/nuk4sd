@@ -15,11 +15,7 @@ extern "C" {
 
 typedef struct NukSandbox NukSandbox;
 
-typedef enum {
-    NUK_BIND_READ_ONLY  = 0,
-    NUK_BIND_READ_WRITE = 1,
-    NUK_BIND_BLACKLIST  = 2
-} NukBindType;
+typedef enum { NUK_BIND_READ_ONLY = 0, NUK_BIND_READ_WRITE = 1, NUK_BIND_BLACKLIST = 2 } NukBindType;
 
 /* Instancia uma nova estrutura de sandbox */
 NukSandbox *nuk_sandbox_create(void);

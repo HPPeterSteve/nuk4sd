@@ -21,8 +21,7 @@
  * NO_NEW_PRIVS continuam sendo aplicados imediatamente depois, no fluxo
  * existente de preparação do jail.
  */
-int vsb_enter_mapped_identity(uid_t ruid, gid_t rgid)
-{
+int vsb_enter_mapped_identity(uid_t ruid, gid_t rgid) {
     if (prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0) {
         SBX_ALERT("USERNS", "PR_SET_KEEPCAPS falhou: %s", strerror(errno));
         return -1;
@@ -36,8 +35,8 @@ int vsb_enter_mapped_identity(uid_t ruid, gid_t rgid)
         return -1;
     }
     if (geteuid() != ruid || getegid() != rgid) {
-        SBX_ALERT("USERNS", "credenciais inesperadas após transição: euid=%u egid=%u",
-                  (unsigned)geteuid(), (unsigned)getegid());
+        SBX_ALERT("USERNS", "credenciais inesperadas após transição: euid=%u egid=%u", (unsigned)geteuid(),
+                  (unsigned)getegid());
         return -1;
     }
 
@@ -66,16 +65,14 @@ int vsb_enter_mapped_identity(uid_t ruid, gid_t rgid)
         SBX_ALERT("USERNS", "capset pós-transição falhou: %s", strerror(errno));
         return -1;
     }
-    SBX_OK("USERNS", "credenciais mapeadas para uid=%u gid=%u antes das montagens",
-            (unsigned)ruid, (unsigned)rgid);
+    SBX_OK("USERNS", "credenciais mapeadas para uid=%u gid=%u antes das montagens", (unsigned)ruid, (unsigned)rgid);
     return 0;
 }
 
 /* ---
  *  sandbox_pivot_root(): Layer 3 — Pivot root to vault path
  * --- */
-static int sandbox_pivot_root(const char *new_root, bool mount_proc)
-{
+static int sandbox_pivot_root(const char *new_root, bool mount_proc) {
     const char *L = "PIVOT";
     SBX_SEP(L);
     /* FIX auditoria: o SBX_LOG anterior recebia new_root ANTES do check
@@ -96,16 +93,15 @@ static int sandbox_pivot_root(const char *new_root, bool mount_proc)
 
     /* Step 1: MS_PRIVATE — prevent mount propagation to host */
     SBX_DBG(L, "\u25b6 Step 1 — mount(none,/,NULL,%s)",
-            decode_mount_flags(MS_REC|MS_PRIVATE, fl_buf, sizeof(fl_buf)));
+            decode_mount_flags(MS_REC | MS_PRIVATE, fl_buf, sizeof(fl_buf)));
     SBX_DBG(L, "  Kernel action: marks entire mount tree as MS_PRIVATE");
     SBX_DBG(L, "  Effect: new mounts inside namespace won't propagate to host");
     int r1 = mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);
     SBX_DBG(L, "  Result: %d %s", r1, r1 — strerror(errno) : "(OK)");
 
     /* Step 2: self-bind new_root (pivot_root requires a mountpoint) */
-    SBX_DBG(L, "\u25b6 Step 2 — mount('%s','%s',NULL,%s)",
-            new_root, new_root,
-            decode_mount_flags(MS_BIND|MS_REC, fl_buf, sizeof(fl_buf)));
+    SBX_DBG(L, "\u25b6 Step 2 — mount('%s','%s',NULL,%s)", new_root, new_root,
+            decode_mount_flags(MS_BIND | MS_REC, fl_buf, sizeof(fl_buf)));
     SBX_DBG(L, "  Kernel requirement: new_root must be a mountpoint for pivot_root(2)");
     if (mount(new_root, new_root, NULL, MS_BIND | MS_REC, NULL) != 0) {
         int e = errno;
@@ -138,8 +134,7 @@ static int sandbox_pivot_root(const char *new_root, bool mount_proc)
 
     /* Step 5: THE pivot_root(2) syscall */
     SBX_DBG(L, "\u25b6 Step 5 — syscall(SYS_pivot_root, '.', '%s')", oldroot);
-    SBX_DBG(L, "  Kernel action: new_root='%s' becomes '/'  |  old '/' -> '%s'",
-            new_root, oldroot);
+    SBX_DBG(L, "  Kernel action: new_root='%s' becomes '/'  |  old '/' -> '%s'", new_root, oldroot);
     SBX_DBG(L, "  Security: stronger than chroot (no path traversal via openat AT_FDCWD)");
     if (syscall(SYS_pivot_root, ".", oldroot) != 0) {
         int e = errno;
@@ -158,7 +153,7 @@ static int sandbox_pivot_root(const char *new_root, bool mount_proc)
      * o /proc do host ainda está tecnicamente visível na árvore antiga. */
     if (mount_proc) {
         mkdir("/proc", 0555);
-        if (mount("proc", "/proc", "proc", MS_NOSUID|MS_NOEXEC|MS_NODEV, NULL) != 0) {
+        if (mount("proc", "/proc", "proc", MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0) {
             SBX_ALERT(L, "mount /proc falhou ANTES do detach: %s", strerror(errno));
         } else {
             SBX_DBG(L, "/proc fresco montado COM SUCESSO antes do detach");
@@ -191,7 +186,6 @@ done:
  * mapa de 2 linhas que exigia esse helper, então o design mudou pra mapa de
  * 1 linha só, que já é escrevível sem privilégio nenhum. */
 
-
 /* ---
  *  sandbox_write_uid_gid_map(): Write UID/GID maps for user namespace
  *
@@ -219,8 +213,7 @@ done:
  *  setresuid() depois do pivot_root — o chamador (vault_cli.c) não deve
  *  mais tentar isso. Ver comentário lá.
  * --- */
-static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
-{
+static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid) {
     char path[256];
     char map[128];
     int fd;
@@ -232,12 +225,9 @@ static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
     /* setgroups deny — precisa vir ANTES de gid_map em kernels que exigem isso */
     snprintf(path, sizeof(path), "/proc/%d/setgroups", (int)child_pid);
     fd = open(path, O_WRONLY);
-    if (fd < 0)
-    {
+    if (fd < 0) {
         fprintf(stderr, "[SANDBOX][WARN] open(%s): %s\n", path, strerror(errno));
-    }
-    else
-    {
+    } else {
         n = write(fd, "deny", 4);
         if (n != 4)
             fprintf(stderr, "[SANDBOX][WARN] write(%s) falhou: %s\n", path, strerror(errno));
@@ -262,16 +252,13 @@ static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
     map_len = snprintf(map, sizeof(map), "%d %d 1\n", (int)ruid, (int)ruid);
 
     fd = open(path, O_WRONLY);
-    if (fd < 0)
-    {
+    if (fd < 0) {
         fprintf(stderr, "[SANDBOX][FATAL] open(%s): %s\n", path, strerror(errno));
-    }
-    else
-    {
+    } else {
         n = write(fd, map, (size_t)map_len);
         if (n != map_len)
-            fprintf(stderr, "[SANDBOX][FATAL] write(%s) falhou: %s (escrito %zd de %d bytes)\n",
-                    path, strerror(errno), n, map_len);
+            fprintf(stderr, "[SANDBOX][FATAL] write(%s) falhou: %s (escrito %zd de %d bytes)\n", path, strerror(errno),
+                    n, map_len);
         else {
             fprintf(stderr, "[SANDBOX][OK] uid_map escrito (identidade): \"%s\"", map);
             uid_ok = true;
@@ -284,16 +271,13 @@ static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
     map_len = snprintf(map, sizeof(map), "%d %d 1\n", (int)rgid, (int)rgid);
 
     fd = open(path, O_WRONLY);
-    if (fd < 0)
-    {
+    if (fd < 0) {
         fprintf(stderr, "[SANDBOX][FATAL] open(%s): %s\n", path, strerror(errno));
-    }
-    else
-    {
+    } else {
         n = write(fd, map, (size_t)map_len);
         if (n != map_len)
-            fprintf(stderr, "[SANDBOX][FATAL] write(%s) falhou: %s (escrito %zd de %d bytes)\n",
-                    path, strerror(errno), n, map_len);
+            fprintf(stderr, "[SANDBOX][FATAL] write(%s) falhou: %s (escrito %zd de %d bytes)\n", path, strerror(errno),
+                    n, map_len);
         else {
             fprintf(stderr, "[SANDBOX][OK] gid_map escrito (identidade): \"%s\"", map);
             gid_ok = true;
@@ -302,17 +286,20 @@ static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
     }
 
     if (!uid_ok || !gid_ok) {
-        fprintf(stderr,
-                "[SANDBOX][FATAL] uid_map/gid_map não foram escritos — o processo ficaria "
-                "preso como UID/GID de overflow (65534, 'nobody') dentro do namespace, sem "
-                "bater com o dono de nada no host (vault FUSE, sockets, /dev/*). Abortando em "
-                "vez de continuar num estado quebrado.\n");
+        fprintf(stderr, "[SANDBOX][FATAL] uid_map/gid_map não foram escritos — o processo ficaria "
+                        "preso como UID/GID de overflow (65534, 'nobody') dentro do namespace, sem "
+                        "bater com o dono de nada no host (vault FUSE, sockets, /dev/*). Abortando em "
+                        "vez de continuar num estado quebrado.\n");
         return -1;
     }
     return 0;
 }
 
-int vsb_pivot_root(const char *new_root, bool mount_proc) { return sandbox_pivot_root(new_root, mount_proc); }
-int vsb_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid) { return sandbox_write_uid_gid_map(child_pid, ruid, rgid); }
+int vsb_pivot_root(const char *new_root, bool mount_proc) {
+    return sandbox_pivot_root(new_root, mount_proc);
+}
+int vsb_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid) {
+    return sandbox_write_uid_gid_map(child_pid, ruid, rgid);
+}
 
 #endif /* __linux__ */

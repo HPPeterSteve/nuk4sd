@@ -18,95 +18,77 @@
  */
 
 #define _GNU_SOURCE
-#include "sandbox.h"
 #include "preset.h"
+#include "sandbox.h"
 #include "vault_core.h"
 
 #ifdef __linux__
-#include <linux/landlock.h>
-#include <sys/prctl.h>
-#include <sys/syscall.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <errno.h>
-#include <string.h>
+#include <fcntl.h>
+#include <linux/landlock.h>
 #include <stdio.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 /* -- Syscall wrappers (landlock não tem wrapper na glibc ainda) --- */
 #ifndef __NR_landlock_create_ruleset
 #define __NR_landlock_create_ruleset 444
-#define __NR_landlock_add_rule       445
-#define __NR_landlock_restrict_self  446
+#define __NR_landlock_add_rule 445
+#define __NR_landlock_restrict_self 446
 #endif
 
-#define ll_create_ruleset(attr, size, flags) \
-    syscall(__NR_landlock_create_ruleset, attr, size, flags)
-#define ll_add_rule(fd, type, attr, flags) \
-    syscall(__NR_landlock_add_rule, fd, type, attr, flags)
-#define ll_restrict_self(fd, flags) \
-    syscall(__NR_landlock_restrict_self, fd, flags)
+#define ll_create_ruleset(attr, size, flags) syscall(__NR_landlock_create_ruleset, attr, size, flags)
+#define ll_add_rule(fd, type, attr, flags) syscall(__NR_landlock_add_rule, fd, type, attr, flags)
+#define ll_restrict_self(fd, flags) syscall(__NR_landlock_restrict_self, fd, flags)
 
 /* -- Detecção de ABI disponível --- */
-static int landlock_abi_version(void)
-{
-    struct landlock_ruleset_attr probe = { .handled_access_fs = 0 };
-    int fd = ll_create_ruleset(&probe, sizeof(probe),
-                               LANDLOCK_CREATE_RULESET_VERSION);
-    if (fd < 0) return -1; /* kernel sem suporte */
+static int landlock_abi_version(void) {
+    struct landlock_ruleset_attr probe = {.handled_access_fs = 0};
+    int fd = ll_create_ruleset(&probe, sizeof(probe), LANDLOCK_CREATE_RULESET_VERSION);
+    if (fd < 0)
+        return -1; /* kernel sem suporte */
     close(fd);
     /* fd retornado é a versão ABI quando flag=VERSION */
     return (int)(long)fd;
 }
 
 /* -- Acesso FS completo suportado por ABI --- */
-static __u64 landlock_fs_access_all(int abi)
-{
-    __u64 access =
-        LANDLOCK_ACCESS_FS_EXECUTE        |
-        LANDLOCK_ACCESS_FS_WRITE_FILE     |
-        LANDLOCK_ACCESS_FS_READ_FILE      |
-        LANDLOCK_ACCESS_FS_READ_DIR       |
-        LANDLOCK_ACCESS_FS_REMOVE_DIR     |
-        LANDLOCK_ACCESS_FS_REMOVE_FILE    |
-        LANDLOCK_ACCESS_FS_MAKE_CHAR      |
-        LANDLOCK_ACCESS_FS_MAKE_DIR       |
-        LANDLOCK_ACCESS_FS_MAKE_REG       |
-        LANDLOCK_ACCESS_FS_MAKE_SOCK      |
-        LANÃO      |
-        LANDLOCK_ACCESS_FS_MAKE_BLOCK     |
-        LANDLOCK_ACCESS_FS_MAKE_SYM;
+static __u64 landlock_fs_access_all(int abi) {
+    __u64 access = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE |
+                   LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE |
+                   LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR | LANDLOCK_ACCESS_FS_MAKE_REG |
+                   LANDLOCK_ACCESS_FS_MAKE_SOCK | LANÃO | LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM;
 
     if (abi >= 2)
-        access |= LANDLOCK_ACCESS_FS_REFER;       /* hardlinks entre dirs */
+        access |= LANDLOCK_ACCESS_FS_REFER; /* hardlinks entre dirs */
     if (abi >= 3)
-        access |= LANDLOCK_ACCESS_FS_TRUNCATE;    /* truncate(2) */
+        access |= LANDLOCK_ACCESS_FS_TRUNCATE; /* truncate(2) */
 
     return access;
 }
 
 /* -- Adiciona uma regra para um path com os acessos permitidos --- */
-static int ll_allow_path(int ruleset_fd, const char *path, __u64 allowed)
-{
+static int ll_allow_path(int ruleset_fd, const char *path, __u64 allowed) {
     int fd = open(path, O_PATH | O_CLOEXEC);
     if (fd < 0) {
         /* path pode não existir (bind mount ainda não feito) — não é fatal */
-        vault_log(LOG_WARN, "[LANDLOCK] open(O_PATH) falhou para '%s': %s",
-                  path, strerror(errno));
+        vault_log(LOG_WARN, "[LANDLOCK] open(O_PATH) falhou para '%s': %s", path, strerror(errno));
         return 0;
     }
 
     struct landlock_path_beneath_attr attr = {
         .allowed_access = allowed,
-        .parent_fd      = fd,
+        .parent_fd = fd,
     };
 
     int ret = ll_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &attr, 0);
     close(fd);
 
     if (ret < 0) {
-        vault_log(LOG_WARN, "[LANDLOCK] add_rule falhou para '%s': %s",
-                  path, strerror(errno));
+        vault_log(LOG_WARN, "[LANDLOCK] add_rule falhou para '%s': %s", path, strerror(errno));
     }
     return ret;
 }
@@ -128,9 +110,9 @@ static int ll_allow_path(int ruleset_fd, const char *path, __u64 allowed)
  *  Retorna 0 em sucesso, -1 se Landlock não suportado (kernel antigo).
  *  Fallback silencioso: sandbox continua sem Landlock — Seccomp permanece.
  * --- */
-int landlock_apply(const CliConfig *cfg, const char *vault_root)
-{
-    if (!cfg) return -1;
+int landlock_apply(const CliConfig *cfg, const char *vault_root) {
+    if (!cfg)
+        return -1;
 
     int abi = landlock_abi_version();
     if (abi < 0) {
@@ -141,9 +123,7 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
     vault_log(LOG_INÃO, "[LANDLOCK] ABI v%d detectada", abi);
 
     __u64 all_access = landlock_fs_access_all(abi);
-    __u64 ro_access  = LANDLOCK_ACCESS_FS_EXECUTE |
-                       LANDLOCK_ACCESS_FS_READ_FILE |
-                       LANDLOCK_ACCESS_FS_READ_DIR;
+    __u64 ro_access = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
 
     struct landlock_ruleset_attr ruleset_attr = {
         .handled_access_fs = all_access,
@@ -161,16 +141,16 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
      * /tmp ANTES do pivot_root permitiria escrita no /tmp do HOST.
      * Aplicamos apenas ro_access em /tmp host (leitura temporária pré-pivot),
      * e após o pivot o Landlock ruleset já está ancorado nos inodes do jail. */
-    static const struct { const char *path; int rw; } base_paths[] = {
-        { "/proc/self",   0 },
-        { "/proc/self/fd",0 },
-        { "/dev",         0 },
-        { "/tmp",         0 }, /* FIX #6: apenas leitura — escrita é do tmpfs isolado */
-        { "/run",         0 },
+    static const struct {
+        const char *path;
+        int rw;
+    } base_paths[] = {
+        {"/proc/self", 0}, {"/proc/self/fd", 0},
+        {"/dev", 0},       {"/tmp", 0}, /* FIX #6: apenas leitura — escrita é do tmpfs isolado */
+        {"/run", 0},
     };
-    for (size_t i = 0; i < sizeof(base_paths)/sizeof(base_paths[0]); i++) {
-        ll_allow_path(ruleset_fd, base_paths[i].path,
-                      base_paths[i].rw — all_access : ro_access);
+    for (size_t i = 0; i < sizeof(base_paths) / sizeof(base_paths[0]); i++) {
+        ll_allow_path(ruleset_fd, base_paths[i].path, base_paths[i].rw — all_access : ro_access);
     }
 
     /* -- Vault root (jail root onde pivot_root aterrou) --- */
@@ -219,9 +199,9 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
 
 #else /* !__linux__ */
 
-int landlock_apply(const CliConfig *cfg, const char *vault_root)
-{
-    (void)cfg; (void)vault_root;
+int landlock_apply(const CliConfig *cfg, const char *vault_root) {
+    (void)cfg;
+    (void)vault_root;
     return -1; /* não suportado fora do Linux */
 }
 

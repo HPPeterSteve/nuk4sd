@@ -1,8 +1,8 @@
 use colored::*;
 use inquire::Select;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
 /// Calcula a distncia de Levenshtein entre duas strings para fuzzy matching.
 #[allow(dead_code)]
@@ -43,17 +43,11 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
     }
 
     if std::env::args().len() > 1 {
-        eprintln!(
-            "{}",
-            format!("✖ O caminho '{}' não foi encontrado.", input).yellow()
-        );
+        eprintln!("{}", format!("✖ O caminho '{}' não foi encontrado.", input).yellow());
         return None;
     }
 
-    println!(
-        "{}",
-        format!("⚠ O caminho '{}' não foi encontrado.", input).yellow()
-    );
+    println!("{}", format!("⚠ O caminho '{}' não foi encontrado.", input).yellow());
 
     // Buscar sugestões no diretório pai ou atual
     let parent = path
@@ -67,12 +61,7 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
         Err(e) => {
             eprintln!(
                 "{}",
-                format!(
-                    "✖ Error accessing parent directory '{}': {}",
-                    parent.display(),
-                    e
-                )
-                .red()
+                format!("✖ Error accessing parent directory '{}': {}", parent.display(), e).red()
             );
             return None;
         }
@@ -84,8 +73,7 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
         None => {
             eprintln!(
                 "{}",
-                "✖ Não foi possível extrair o nome do arquivo/diretório do caminho fornecido."
-                    .red()
+                "✖ Não foi possível extrair o nome do arquivo/diretório do caminho fornecido.".red()
             );
             return None;
         }
@@ -128,18 +116,12 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
         }
     } else {
         // Se houver várias, deixar escolher interativamente
-        let mut options: Vec<String> = suggestions
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
+        let mut options: Vec<String> = suggestions.iter().map(|p| p.display().to_string()).collect();
         options.push("Nenhum destes".to_string());
 
-        let ans = Select::new(
-            "Vários caminhos parecidos encontrados. Escolha um:",
-            options,
-        )
-        .prompt()
-        .ok()?;
+        let ans = Select::new("Vários caminhos parecidos encontrados. Escolha um:", options)
+            .prompt()
+            .ok()?;
         if ans != "Nenhum destes" {
             return Some(PathBuf::from(ans));
         }

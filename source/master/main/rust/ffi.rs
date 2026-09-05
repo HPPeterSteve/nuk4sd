@@ -171,12 +171,7 @@ extern "C" {
     fn vault_ffi_init() -> c_int;
     fn vault_ffi_shutdown() -> c_int;
 
-    fn vault_create_ffi(
-        name: *const c_char,
-        vault_type: c_int,
-        path: *const c_char,
-        password: *const c_char,
-    ) -> c_int;
+    fn vault_create_ffi(name: *const c_char, vault_type: c_int, path: *const c_char, password: *const c_char) -> c_int;
     fn vault_delete_ffi(id: u32, password: *const c_char) -> c_int;
 
     fn vault_mount_ffi(id: u32, password: *const c_char) -> c_int;
@@ -187,12 +182,7 @@ extern "C" {
 
     fn vault_get_status_ffi(id: u32) -> c_int;
 
-    fn vault_sandbox_ffi(
-        id: u32,
-        password: *const c_char,
-        gui_mode: c_int,
-        app_cmd: *const c_char,
-    ) -> c_int;
+    fn vault_sandbox_ffi(id: u32, password: *const c_char, gui_mode: c_int, app_cmd: *const c_char) -> c_int;
 
     fn vault_list_ids_ffi(out: *mut VaultIdPathRaw, out_cap: u32, out_count: *mut u32) -> c_int;
     fn vault_count_ffi() -> u32;
@@ -228,10 +218,7 @@ extern "C" {
     /* ── OCI / Container ─────────────────────────────────── */
     /// Notify C side that OCI image has been pulled and extracted.
     /// C calls this back after vault_cli dispatches --image.
-    fn vault_oci_image_ready_ffi(
-        vault_id: u32,
-        lowerdir: *const c_char,
-    ) -> c_int;
+    fn vault_oci_image_ready_ffi(vault_id: u32, lowerdir: *const c_char) -> c_int;
 }
 
 /* ── no_mangle FFI callbacks — invoked by vault_cli.c via function pointer ─── */
@@ -240,10 +227,7 @@ extern "C" {
 /// Resolves short names (alpine, ubuntu, kali) to GitHub release URLs.
 #[cfg(target_os = "linux")]
 #[no_mangle]
-pub extern "C" fn rust_oci_pull_image(
-    url_or_alias: *const c_char,
-    target_dir: *const c_char,
-) -> c_int {
+pub extern "C" fn rust_oci_pull_image(url_or_alias: *const c_char, target_dir: *const c_char) -> c_int {
     use crate::oci::pull_and_extract_image;
     use std::path::Path;
 
@@ -313,10 +297,9 @@ pub extern "C" fn rust_cgroup_remove(cgroup_name: *const c_char) -> c_int {
 /// Stub for non-Linux targets to keep the build clean on Windows.
 #[cfg(not(target_os = "linux"))]
 #[no_mangle]
-pub extern "C" fn rust_oci_pull_image(
-    _url_or_alias: *const c_char,
-    _target_dir: *const c_char,
-) -> c_int { -1 }
+pub extern "C" fn rust_oci_pull_image(_url_or_alias: *const c_char, _target_dir: *const c_char) -> c_int {
+    -1
+}
 
 #[cfg(not(target_os = "linux"))]
 #[no_mangle]
@@ -325,12 +308,15 @@ pub extern "C" fn rust_cgroup_apply(
     _pid: u64,
     _memory_limit_mb: i64,
     _cpu_shares: u64,
-) -> c_int { -1 }
+) -> c_int {
+    -1
+}
 
 #[cfg(not(target_os = "linux"))]
 #[no_mangle]
-pub extern "C" fn rust_cgroup_remove(_cgroup_name: *const c_char) -> c_int { -1 }
-
+pub extern "C" fn rust_cgroup_remove(_cgroup_name: *const c_char) -> c_int {
+    -1
+}
 
 pub fn init() -> VResult {
     unsafe { check(vault_ffi_init()) }
@@ -527,11 +513,12 @@ pub fn exec_cli_cmd(cmd_line: &str) -> (i32, String) {
 
     let c_ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
 
-    let exit_code = unsafe {
-        vault_cli_parse_and_exec(c_ptrs.len() as c_int, c_ptrs.as_ptr())
-    };
+    let exit_code = unsafe { vault_cli_parse_and_exec(c_ptrs.len() as c_int, c_ptrs.as_ptr()) };
 
-    (exit_code, format!("Comando executado: {} (retorno: {})", cmd_line, exit_code))
+    (
+        exit_code,
+        format!("Comando executado: {} (retorno: {})", cmd_line, exit_code),
+    )
 }
 
 /// Callback C -> Rust para cópia segura de arquivos
@@ -553,4 +540,3 @@ pub extern "C" fn rust_vault_copy_file(src: *const c_char, dst: *const c_char) -
         Err(_) => -1,
     }
 }
-

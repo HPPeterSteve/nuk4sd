@@ -35,7 +35,7 @@
 
 #ifdef __linux__
 static pthread_t g_monitor_tid;
-static bool      g_monitor_started = false;
+static bool g_monitor_started = false;
 #endif
 
 int vault_ffi_init(void) {
@@ -46,8 +46,7 @@ int vault_ffi_init(void) {
     struct stat st;
     if (stat(VAULT_CATALOG_PATH, &st) != 0) {
         if (mkdir(VAULT_CATALOG_PATH, 0700) != 0 && errno != EEXIST) {
-            fprintf(stderr, "Cannot create catalog dir %s: %s\n",
-                    VAULT_CATALOG_PATH, strerror(errno));
+            fprintf(stderr, "Cannot create catalog dir %s: %s\n", VAULT_CATALOG_PATH, strerror(errno));
             return (int)ERR_IO;
         }
     }
@@ -68,17 +67,16 @@ int vault_ffi_init(void) {
 
 #ifdef __linux__
     /* Init monitor context */
-    g_monitor.catalog     = &g_catalog;
-    g_monitor.running     = true;
-    g_monitor.quiet_mode   = true; /* Ativar modo silencioso por padrão conforme solicitado */
+    g_monitor.catalog = &g_catalog;
+    g_monitor.running = true;
+    g_monitor.quiet_mode = true; /* Ativar modo silencioso por padrão conforme solicitado */
     /* fanotify_init configurado apenas para notificações, sem FAN_REPORT_FID que exige CAP_SYS_ADMIN */
-    g_monitor.fanoti_fd = fanotify_init(
-        FAN_CLASS_PRE_CONTENT | FAN_CLOEXEC | FAN_NONBLOCK,
-        O_RDONLY | O_LARGEFILE
-    );
+    g_monitor.fanoti_fd = fanotify_init(FAN_CLASS_PRE_CONTENT | FAN_CLOEXEC | FAN_NONBLOCK, O_RDONLY | O_LARGEFILE);
 
     if (g_monitor.fanoti_fd < 0) {
-        vault_log(LOG_INÃO, "Monitor ativo (fanotify) desabilitado: requer root/CAP_SYS_ADMIN. Protecoes FUSE operam normalmente.");
+        vault_log(
+            LOG_INÃO,
+            "Monitor ativo (fanotify) desabilitado: requer root/CAP_SYS_ADMIN. Protecoes FUSE operam normalmente.");
         /* Non-fatal: continue without active blocking monitor */
     }
 
@@ -160,12 +158,7 @@ int vault_ffi_shutdown(void) {
     return (int)ERR_OK;
 }
 
-int vault_create_ffi(
-    const char *name,
-    int         vault_type,
-    const char *path,
-    const char *password
-) {
+int vault_create_ffi(const char *name, int vault_type, const char *path, const char *password) {
     VaultType vt = (vault_type == 1) — VAULT_TYPE_PROTECTED : VAULT_TYPE_NORMAL;
 
 #ifdef __linux__
@@ -191,7 +184,8 @@ int vault_delete_ffi(uint32_t id, const char *password) {
 }
 
 int vault_rename_ffi(uint32_t id, const char *new_name, const char *password) {
-    if (!new_name || new_name[0] == '\0') return (int)ERR_INVALID_ARGS;
+    if (!new_name || new_name[0] == '\0')
+        return (int)ERR_INVALID_ARGS;
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
 #endif
@@ -203,7 +197,8 @@ int vault_rename_ffi(uint32_t id, const char *new_name, const char *password) {
 }
 
 int vault_unlock_ffi(uint32_t id, const char *password) {
-    if (!password || password[0] == '\0') return (int)ERR_PASS_REQUIRED;
+    if (!password || password[0] == '\0')
+        return (int)ERR_PASS_REQUIRED;
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
 #endif
@@ -215,7 +210,8 @@ int vault_unlock_ffi(uint32_t id, const char *password) {
 }
 
 int vault_change_password_ffi(uint32_t id, const char *old_pass, const char *new_pass) {
-    if (!old_pass || !new_pass) return (int)ERR_INVALID_ARGS;
+    if (!old_pass || !new_pass)
+        return (int)ERR_INVALID_ARGS;
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
 #endif
@@ -226,10 +222,9 @@ int vault_change_password_ffi(uint32_t id, const char *old_pass, const char *new
     return (int)err;
 }
 
-
-
 int vault_encrypt_ffi(uint32_t id, const char *password) {
-    if (!password || password[0] == '\0') return (int)ERR_PASS_REQUIRED;
+    if (!password || password[0] == '\0')
+        return (int)ERR_PASS_REQUIRED;
 
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
@@ -281,15 +276,18 @@ int vault_encrypt_ffi(uint32_t id, const char *password) {
     char outpath[VAULT_PATH_MAX + NAME_MAX + 10];
 
     while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
+        if (de->d_name[0] == '.')
+            continue;
         size_t nlen = strlen(de->d_name);
-        if (nlen > 4 && strcmp(de->d_name + nlen - 4, ".enc") == 0) continue;
+        if (nlen > 4 && strcmp(de->d_name + nlen - 4, ".enc") == 0)
+            continue;
 
-        snprintf(inpath,  sizeof(inpath),  "%s/%s",     v->path, de->d_name);
+        snprintf(inpath, sizeof(inpath), "%s/%s", v->path, de->d_name);
         snprintf(outpath, sizeof(outpath), "%s/%s.enc", v->path, de->d_name);
 
         struct stat st;
-        if (stat(inpath, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        if (stat(inpath, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
 
         if (encrypt_file(inpath, outpath, key) == ERR_OK) {
             unlink(inpath);
@@ -314,7 +312,8 @@ int vault_encrypt_ffi(uint32_t id, const char *password) {
 }
 
 int vault_decrypt_ffi(uint32_t id, const char *password) {
-    if (!password || password[0] == '\0') return (int)ERR_PASS_REQUIRED;
+    if (!password || password[0] == '\0')
+        return (int)ERR_PASS_REQUIRED;
 
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
@@ -367,14 +366,15 @@ int vault_decrypt_ffi(uint32_t id, const char *password) {
 
     while ((de = readdir(dir)) != NULL) {
         size_t nlen = strlen(de->d_name);
-        if (nlen <= 4 || strcmp(de->d_name + nlen - 4, ".enc") != 0) continue;
+        if (nlen <= 4 || strcmp(de->d_name + nlen - 4, ".enc") != 0)
+            continue;
 
-        snprintf(inpath,  sizeof(inpath),  "%s/%s",      v->path, de->d_name);
-        snprintf(outpath, sizeof(outpath), "%s/%.*s",    v->path,
-                 (int)(nlen - 4), de->d_name);
+        snprintf(inpath, sizeof(inpath), "%s/%s", v->path, de->d_name);
+        snprintf(outpath, sizeof(outpath), "%s/%.*s", v->path, (int)(nlen - 4), de->d_name);
 
         struct stat st;
-        if (stat(inpath, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        if (stat(inpath, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
 
         if (decrypt_file(inpath, outpath, key) == ERR_OK) {
             unlink(inpath);
@@ -397,8 +397,6 @@ int vault_decrypt_ffi(uint32_t id, const char *password) {
 
     return (int)ERR_OK;
 }
-
-
 
 int vault_scan_ffi(uint32_t id) {
 #ifdef __linux__
@@ -451,12 +449,18 @@ int vault_scan_report_ffi(uint32_t id, char *out, size_t out_len) {
                 issues++;
                 if (pos < out_len - 1) {
                     int wrote = snprintf(out + pos, out_len - pos, "%s\n", e->filename);
-                    if (wrote > 0) pos += (size_t)wrote;
-                    if (pos >= out_len - 1) { pos = out_len - 1; out[pos] = '\0'; break; }
+                    if (wrote > 0)
+                        pos += (size_t)wrote;
+                    if (pos >= out_len - 1) {
+                        pos = out_len - 1;
+                        out[pos] = '\0';
+                        break;
+                    }
                 }
             }
         }
-        if (pos >= out_len - 1) break;
+        if (pos >= out_len - 1)
+            break;
     }
 
     if (issues == 0) {
@@ -482,21 +486,17 @@ int vault_resolve_ffi(uint32_t id, const char *password) {
     return (int)err;
 }
 
-
 /* cmd_list, cmd_info, cmd_files — inline display functions */
 
 static void ffi_cmd_list(void) {
 
-    printf("\nCATALOG: %s (%u vaults)\n",
-           g_catalog.category,
-           g_catalog.count);
+    printf("\nCATALOG: %s (%u vaults)\n", g_catalog.category, g_catalog.count);
 
     printf(" ID   NAME                       TYPE        STATUS     PASS\n");
     printf("-------------------------------------------------------------\n");
 
     if (g_catalog.count == 0) {
-        printf(" No vaults available for %s category\n",
-               g_catalog.category);
+        printf(" No vaults available for %s category\n", g_catalog.category);
         return;
     }
 
@@ -505,25 +505,34 @@ static void ffi_cmd_list(void) {
         const char *status_s;
 
         switch (v->status) {
-            case VAULT_STATUS_OK:      status_s = "OK";      break;
-            case VAULT_STATUS_LOCKED:  status_s = "LOCKED";  break;
-            case VAULT_STATUS_ALERT:   status_s = "ALERT";   break;
-            case VAULT_STATUS_DELETED: status_s = "DELETED"; break;
-            default:                   status_s = "—";      break;
+        case VAULT_STATUS_OK:
+            status_s = "OK";
+            break;
+        case VAULT_STATUS_LOCKED:
+            status_s = "LOCKED";
+            break;
+        case VAULT_STATUS_ALERT:
+            status_s = "ALERT";
+            break;
+        case VAULT_STATUS_DELETED:
+            status_s = "DELETED";
+            break;
+        default:
+            status_s = "—";
+            break;
         }
 
-        printf(" %-4u %-26s %-11s %-10s %s\n",
-               v->id,
-               v->name,
-               v->type == VAULT_TYPE_PROTECTED — "PROTECTED" : "NORMAL",
-               status_s,
-               v->has_pass — "Y" : " ");
+        printf(" %-4u %-26s %-11s %-10s %s\n", v->id, v->name, v->type == VAULT_TYPE_PROTECTED — "PROTECTED" : "NORMAL",
+               status_s, v->has_pass — "Y" : " ");
     }
 }
 
 static void ffi_cmd_info(uint32_t id) {
     Vault *v = vault_find_by_id(id);
-    if (!v) { printf("  Vault #%u not found.\n", id); return; }
+    if (!v) {
+        printf("  Vault #%u not found.\n", id);
+        return;
+    }
 
     char tbuf[32];
     struct tm *tm;
@@ -534,10 +543,18 @@ static void ffi_cmd_info(uint32_t id) {
     printf("  Type         : %s\n", v->type == VAULT_TYPE_PROTECTED — "PROTECTED" : "NORMAL");
     printf("  Status       : ");
     switch (v->status) {
-        case VAULT_STATUS_OK:      printf("OK\n");      break;
-        case VAULT_STATUS_LOCKED:  printf("LOCKED\n");  break;
-        case VAULT_STATUS_ALERT:   printf("ALERT\n");   break;
-        case VAULT_STATUS_DELETED: printf("DELETED\n"); break;
+    case VAULT_STATUS_OK:
+        printf("OK\n");
+        break;
+    case VAULT_STATUS_LOCKED:
+        printf("LOCKED\n");
+        break;
+    case VAULT_STATUS_ALERT:
+        printf("ALERT\n");
+        break;
+    case VAULT_STATUS_DELETED:
+        printf("DELETED\n");
+        break;
     }
     printf("  Password     : %s\n", v->has_pass — "Yes" : "No");
     printf("  Path         : %s\n", v->path);
@@ -562,7 +579,10 @@ static void ffi_cmd_info(uint32_t id) {
 
 static void ffi_cmd_files(uint32_t id) {
     Vault *v = vault_find_by_id(id);
-    if (!v) { printf("  Vault #%u not found.\n", id); return; }
+    if (!v) {
+        printf("  Vault #%u not found.\n", id);
+        return;
+    }
 
     printf("\n  Files in vault '%s':\n", v->name);
     printf("  %-40s  %-16s  %s\n", "Filename", "Last seen", "Modified");
@@ -574,13 +594,12 @@ static void ffi_cmd_files(uint32_t id) {
             char tbuf[32];
             struct tm *tm = localtime(&e->last_seen);
             strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M", tm);
-            printf("  %-40s  %-16s  %s\n",
-                   e->filename, tbuf,
-                   e->modified — "YES !" : "no");
+            printf("  %-40s  %-16s  %s\n", e->filename, tbuf, e->modified — "YES !" : "no");
             any = true;
         }
     }
-    if (!any) printf("  (no files tracked)\n");
+    if (!any)
+        printf("  (no files tracked)\n");
     printf("\n");
 }
 
@@ -614,8 +633,6 @@ void vault_files_ffi(uint32_t id) {
 #endif
 }
 
-
-
 int vault_sandbox_ffi(uint32_t id, const char *password, int gui_mode, const char *app_cmd) {
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
@@ -635,7 +652,6 @@ int vault_sandbox_ffi(uint32_t id, const char *password, int gui_mode, const cha
     return (int)vault_sandbox_open(v, password, gui_mode != 0, app_cmd);
 }
 
-
 /* Isola caminho arbitrário via bind-mount readonly (ver vault_sandbox.c) */
 extern int vault_isolate_path_readonly(const char *path);
 
@@ -644,12 +660,11 @@ int vault_isolate_path_ffi(const char *path) {
 }
 
 int vault_rule_ffi(uint32_t vault_id, int max_fails, int hour_from, int hour_to) {
-    if (g_rule_count >= MAX_RULES) return (int)ERR_SYSTEM;
+    if (g_rule_count >= MAX_RULES)
+        return (int)ERR_SYSTEM;
     rule_add(vault_id, max_fails, hour_from, hour_to);
     return (int)ERR_OK;
 }
-
-
 
 int vault_get_status_ffi(uint32_t id) {
 #ifdef __linux__
@@ -675,7 +690,8 @@ int vault_get_status_ffi(uint32_t id) {
  *   Uses Rust's rust_vault_copy_file (safe_copy) for the operation.
  */
 int vault_export_file_ffi(uint32_t id, const char *filename, const char *dst_path) {
-    if (!filename || !dst_path) return (int)ERR_INVALID_ARGS;
+    if (!filename || !dst_path)
+        return (int)ERR_INVALID_ARGS;
 
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
@@ -708,7 +724,8 @@ int vault_export_file_ffi(uint32_t id, const char *filename, const char *dst_pat
 }
 
 int vault_export_and_decrypt_file_ffi(uint32_t id, const char *filename, const char *dst_path, const char *password) {
-    if (!filename || !dst_path || !password) return (int)ERR_INVALID_ARGS;
+    if (!filename || !dst_path || !password)
+        return (int)ERR_INVALID_ARGS;
 
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
@@ -759,7 +776,8 @@ int vault_export_and_decrypt_file_ffi(uint32_t id, const char *filename, const c
 }
 
 int vault_get_real_path_ffi(uint32_t id, char *out_path, size_t out_len) {
-    if (!out_path || out_len == 0) return (int)ERR_INVALID_ARGS;
+    if (!out_path || out_len == 0)
+        return (int)ERR_INVALID_ARGS;
 
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
@@ -787,7 +805,8 @@ int vault_get_real_path_ffi(uint32_t id, char *out_path, size_t out_len) {
  * lock without requiring a full FUSE session.
  * --- */
 int vault_get_cipher_path_ffi(uint32_t id, char *out_path, size_t out_len) {
-    if (!out_path || out_len == 0) return (int)ERR_INVALID_ARGS;
+    if (!out_path || out_len == 0)
+        return (int)ERR_INVALID_ARGS;
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
 #endif
@@ -827,8 +846,7 @@ int vault_set_cipher_lock_ffi(uint32_t id, int locked) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     if (chmod(v->cipher_path, target_mode) != 0) {
-        vault_log(LOG_WARN,
-                  "[PHYSICAL_LOCK] chmod %04o FAILED on cipher_dir='%s' vault_id=%u: errno=%d (%s).",
+        vault_log(LOG_WARN, "[PHYSICAL_LOCK] chmod %04o FAILED on cipher_dir='%s' vault_id=%u: errno=%d (%s).",
                   target_mode, v->cipher_path, v->id, errno, strerror(errno));
 #ifdef __linux__
         pthread_mutex_unlock(&g_monitor.lock);
@@ -839,14 +857,13 @@ int vault_set_cipher_lock_ffi(uint32_t id, int locked) {
               "[PHYSICAL_LOCK] STATE CHANGE \u2502 cipher_dir='%s' \u2502 vault_id=%u \u2502 "
               "mode: %s \u2502 uid=%d \u2502 ts=%ld.%09ld",
               v->cipher_path, v->id,
-              locked — "0700 \u2192 0000 (SEALED)" : "0000 \u2192 0700 (UNLOCKED for authorized I/O)",
-              (int)getuid(), (long)ts.tv_sec, ts.tv_nsec);
+              locked — "0700 \u2192 0000 (SEALED)" : "0000 \u2192 0700 (UNLOCKED for authorized I/O)", (int)getuid(),
+              (long)ts.tv_sec, ts.tv_nsec);
 #ifdef __linux__
     pthread_mutex_unlock(&g_monitor.lock);
 #endif
     return (int)ERR_OK;
 }
-
 
 int vault_is_protected_ffi(uint32_t id) {
     int ret = 0;
@@ -862,7 +879,6 @@ int vault_is_protected_ffi(uint32_t id) {
 #endif
     return ret;
 }
-
 
 int vault_mount_ffi(uint32_t id, const char *password) {
 #ifdef __linux__
@@ -917,8 +933,7 @@ int vault_unmount_ffi(uint32_t id) {
     return (int)err;
 }
 
-int vault_worm_set_flags_ffi(uint32_t id, uint32_t flags)
-{
+int vault_worm_set_flags_ffi(uint32_t id, uint32_t flags) {
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
 #endif
@@ -936,8 +951,7 @@ int vault_worm_set_flags_ffi(uint32_t id, uint32_t flags)
     return (int)err;
 }
 
-int vault_worm_clear_flags_ffi(uint32_t id, uint32_t flags)
-{
+int vault_worm_clear_flags_ffi(uint32_t id, uint32_t flags) {
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
 #endif
@@ -955,8 +969,7 @@ int vault_worm_clear_flags_ffi(uint32_t id, uint32_t flags)
     return (int)err;
 }
 
-int vault_worm_set_scan_ffi(uint32_t id)
-{
+int vault_worm_set_scan_ffi(uint32_t id) {
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
 #endif
@@ -974,8 +987,7 @@ int vault_worm_set_scan_ffi(uint32_t id)
     return (int)err;
 }
 
-uint32_t vault_worm_get_flags_ffi(uint32_t id)
-{
+uint32_t vault_worm_get_flags_ffi(uint32_t id) {
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
 #endif
@@ -987,12 +999,9 @@ uint32_t vault_worm_get_flags_ffi(uint32_t id)
     return flags;
 }
 
-
-
-int vault_mount_export_ffi(uint32_t id, const char *password,
-                           const char *dst_dir, const char *filename)
-{
-    if (!dst_dir || dst_dir[0] == '\0') return (int)ERR_INVALID_ARGS;
+int vault_mount_export_ffi(uint32_t id, const char *password, const char *dst_dir, const char *filename) {
+    if (!dst_dir || dst_dir[0] == '\0')
+        return (int)ERR_INVALID_ARGS;
 
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
@@ -1024,10 +1033,8 @@ int vault_mount_export_ffi(uint32_t id, const char *password,
     }
 
     bool is_scan = (v->worm_flags & WORM_PROTECT_SCAN) != 0;
-    vault_log(LOG_AUDIT,
-              "[mount-export] BEGIN vault='%s' id=%u scan=%s dst='%s' file='%s'",
-              v->name, v->id, is_scan — "YES" : "no",
-              dst_dir, filename && filename[0] — filename : "(all)");
+    vault_log(LOG_AUDIT, "[mount-export] BEGIN vault='%s' id=%u scan=%s dst='%s' file='%s'", v->name, v->id,
+              is_scan — "YES" : "no", dst_dir, filename && filename[0] — filename : "(all)");
 
     /* Collect files to export — read directly from cipher_path, bypassing FUSE */
     VaultErrorr result = ERR_OK;
@@ -1038,25 +1045,26 @@ int vault_mount_export_ffi(uint32_t id, const char *password,
 #ifdef __linux__
         pthread_mutex_unlock(&g_monitor.lock);
 #endif
-        vault_log(LOG_ERROR, "[mount-export] Cannot open cipher_path '%s': %s",
-                  v->cipher_path, strerror(errno));
+        vault_log(LOG_ERROR, "[mount-export] Cannot open cipher_path '%s': %s", v->cipher_path, strerror(errno));
         return (int)ERR_IO;
     }
 
     int exported = 0, failed = 0;
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
+        if (de->d_name[0] == '.')
+            continue;
 
         /* Skip if we want a specific file and this isn't it */
-        if (!export_all && strcmp(de->d_name, filename) != 0) continue;
+        if (!export_all && strcmp(de->d_name, filename) != 0)
+            continue;
 
         char src_path[VAULT_PATH_MAX * 2];
-        snprintf(src_path, sizeof(src_path), "%s/%s",
-                 v->cipher_path, de->d_name);
+        snprintf(src_path, sizeof(src_path), "%s/%s", v->cipher_path, de->d_name);
 
         struct stat st;
-        if (stat(src_path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        if (stat(src_path, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
 
         /* Build destination path; strip .enc suffix when decrypting */
         char dst_name[NAME_MAX + 1];
@@ -1065,8 +1073,7 @@ int vault_mount_export_ffi(uint32_t id, const char *password,
 
         char dst_path[VAULT_PATH_MAX * 2];
 
-        if (v->type == VAULT_TYPE_PROTECTED &&
-            strlen(dst_name) > 4 &&
+        if (v->type == VAULT_TYPE_PROTECTED && strlen(dst_name) > 4 &&
             strcmp(dst_name + strlen(dst_name) - 4, ".enc") == 0) {
             /* Strip .enc for decrypted output */
             char stripped[NAME_MAX + 1];
@@ -1078,9 +1085,7 @@ int vault_mount_export_ffi(uint32_t id, const char *password,
             uint8_t key[KEY_LEN];
             VaultErrorr kerr = derive_key_for(password, v->salt, "file-encryption", key);
             if (kerr != ERR_OK) {
-                vault_log(LOG_ERROR,
-                          "[mount-export] key derivation failed for '%s'",
-                          de->d_name);
+                vault_log(LOG_ERROR, "[mount-export] key derivation failed for '%s'", de->d_name);
                 failed++;
                 explicit_bzero(key, KEY_LEN);
                 continue;
@@ -1088,9 +1093,7 @@ int vault_mount_export_ffi(uint32_t id, const char *password,
             VaultErrorr derr = decrypt_file(src_path, dst_path, key);
             explicit_bzero(key, KEY_LEN);
             if (derr != ERR_OK) {
-                vault_log(LOG_ERROR,
-                          "[mount-export] decrypt failed for '%s': %s",
-                          de->d_name, vault_strerror(derr));
+                vault_log(LOG_ERROR, "[mount-export] decrypt failed for '%s': %s", de->d_name, vault_strerror(derr));
                 failed++;
                 continue;
             }
@@ -1098,24 +1101,21 @@ int vault_mount_export_ffi(uint32_t id, const char *password,
             /* Plain copy via rust_vault_copy_file (defined in Rust) */
             snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, dst_name);
             if (rust_vault_copy_file(src_path, dst_path) != 0) {
-                vault_log(LOG_ERROR,
-                          "[mount-export] copy failed for '%s'", de->d_name);
+                vault_log(LOG_ERROR, "[mount-export] copy failed for '%s'", de->d_name);
                 failed++;
                 continue;
             }
         }
 
-        vault_log(LOG_AUDIT,
-                  "[mount-export] EXPORTED '%s' -> '%s'", src_path, dst_path);
+        vault_log(LOG_AUDIT, "[mount-export] EXPORTED '%s' -> '%s'", src_path, dst_path);
         exported++;
     }
     closedir(dir);
 
-    vault_log(LOG_AUDIT,
-              "[mount-export] DONE vault='%s' exported=%d failed=%d",
-              v->name, exported, failed);
+    vault_log(LOG_AUDIT, "[mount-export] DONE vault='%s' exported=%d failed=%d", v->name, exported, failed);
 
-    if (failed > 0) result = ERR_IO;
+    if (failed > 0)
+        result = ERR_IO;
 
 #ifdef __linux__
     pthread_mutex_unlock(&g_monitor.lock);
@@ -1123,9 +1123,9 @@ int vault_mount_export_ffi(uint32_t id, const char *password,
     return (int)result;
 }
 
-
 int vault_list_ids_ffi(VaultIdPath *out, uint32_t out_cap, uint32_t *out_count) {
-    if (!out || !out_count || out_cap == 0) return (int)ERR_INVALID_ARGS;
+    if (!out || !out_count || out_cap == 0)
+        return (int)ERR_INVALID_ARGS;
 
 #ifdef __linux__
     pthread_mutex_lock(&g_monitor.lock);
@@ -1159,8 +1159,6 @@ int vault_list_ids_ffi(VaultIdPath *out, uint32_t out_cap, uint32_t *out_count) 
 uint32_t vault_count_ffi(void) {
     return g_catalog.count;
 }
-
-
 
 #ifdef __linux__
 typedef struct PidNode {
@@ -1198,7 +1196,8 @@ void vault_auth_pid_remove_ffi(pid_t pid) {
 
 int vault_auth_pid_is_authorized_ffi(pid_t pid) {
     /* Nuk4sd itself is always authorized */
-    if (pid == getpid()) return 1;
+    if (pid == getpid())
+        return 1;
     pthread_mutex_lock(&g_monitor.lock);
     for (PidNode *n = g_pid_whitelist; n; n = n->next) {
         if (n->pid == pid) {
@@ -1211,11 +1210,17 @@ int vault_auth_pid_is_authorized_ffi(pid_t pid) {
 }
 #else
 /* Stubs for non-Linux platforms */
-void vault_auth_pid_add_ffi(pid_t pid) { (void)pid; }
-void vault_auth_pid_remove_ffi(pid_t pid) { (void)pid; }
-int vault_auth_pid_is_authorized_ffi(pid_t pid) { (void)pid; return 1; }
+void vault_auth_pid_add_ffi(pid_t pid) {
+    (void)pid;
+}
+void vault_auth_pid_remove_ffi(pid_t pid) {
+    (void)pid;
+}
+int vault_auth_pid_is_authorized_ffi(pid_t pid) {
+    (void)pid;
+    return 1;
+}
 #endif
-
 
 #ifndef VAULT_FFI_BUILD
 int main(void) {

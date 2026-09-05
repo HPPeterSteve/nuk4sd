@@ -5,10 +5,7 @@ pub fn list_process_status(options: &SystemOptions) {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    println!(
-        "\n{:<10} {:<25} {:<12} {:<15}",
-        "PID", "PROCESSO", "MEMÓRIA", "STATUS"
-    );
+    println!("\n{:<10} {:<25} {:<12} {:<15}", "PID", "PROCESSO", "MEMÓRIA", "STATUS");
     println!("{:-<62}", "");
 
     for (pid, process) in sys.processes() {
@@ -31,7 +28,6 @@ pub fn list_process_status(options: &SystemOptions) {
         }
     }
 }
-
 
 // Estrutura de opções para escolher quais infos mostrar
 pub struct SystemOptions {

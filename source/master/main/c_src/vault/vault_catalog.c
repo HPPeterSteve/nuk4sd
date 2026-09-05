@@ -39,10 +39,12 @@ char g_lock_file[VAULT_PATH_MAX];
 static int mkdir_p(const char *path) {
     char tmp[VAULT_PATH_MAX];
     size_t len = snprintf(tmp, sizeof(tmp), "%s", path);
-    if (len == 0 || len >= sizeof(tmp)) return -1;
+    if (len == 0 || len >= sizeof(tmp))
+        return -1;
 
     /* remove trailing slash, se houver */
-    if (tmp[len - 1] == '/') tmp[len - 1] = '\0';
+    if (tmp[len - 1] == '/')
+        tmp[len - 1] = '\0';
 
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
@@ -65,7 +67,8 @@ void resolve_paths(void) {
     const char *home = getenv("HOME");
     if (!home) {
         home = getenv("HOME");
-        if (!home) home = "/root"; /* Fallback last-resort: root home */
+        if (!home)
+            home = "/root"; /* Fallback last-resort: root home */
     }
 
     snprintf(g_catalog_path, sizeof(g_catalog_path), "%s/.local/share/Nuk4sd", home);
@@ -77,8 +80,7 @@ void resolve_paths(void) {
     struct stat st;
     if (stat(g_catalog_path, &st) != 0) {
         if (mkdir_p(g_catalog_path) != 0) {
-            vault_log(LOG_ERROR, "Falha ao criar diretório do catálogo '%s': %s",
-                      g_catalog_path, strerror(errno));
+            vault_log(LOG_ERROR, "Falha ao criar diretório do catálogo '%s': %s", g_catalog_path, strerror(errno));
         }
     }
 
@@ -112,35 +114,33 @@ void resolve_paths(void) {
             fclose(src);
 
         } else {
-            int saved_errno = errno;  /* captura antes que outra chamada mude errno */
-            if (saved_errno == EACCES || saved_errno == EPERM || saved_errno == ENOENT || saved_errno == EISDIR || saved_errno == EROFS) {
-                vault_log(LOG_WARN, "Sem permissão para ler catalog.dat legado em '%s': %s",
-                    legacy_catalog, strerror(saved_errno));
+            int saved_errno = errno; /* captura antes que outra chamada mude errno */
+            if (saved_errno == EACCES || saved_errno == EPERM || saved_errno == ENOENT || saved_errno == EISDIR ||
+                saved_errno == EROFS) {
+                vault_log(LOG_WARN, "Sem permissão para ler catalog.dat legado em '%s': %s", legacy_catalog,
+                          strerror(saved_errno));
             } else {
-                vault_log(LOG_WARN, "Não foi possível abrir catalog.dat legado em '%s': %s",
-                    legacy_catalog, strerror(saved_errno));
+                vault_log(LOG_WARN, "Não foi possível abrir catalog.dat legado em '%s': %s", legacy_catalog,
+                          strerror(saved_errno));
             }
         }
     }
 }
 
 /* ---
-  *  SECTION 5: FILE HASH MAP
+ *  SECTION 5: FILE HASH MAP
  * --- */
 
-uint32_t hashmap_bucket(const char *s)
-{
+uint32_t hashmap_bucket(const char *s) {
     uint32_t h = 2166136261u;
-    while (*s)
-    {
+    while (*s) {
         h ^= (uint8_t)*s++;
         h *= 16777619u;
     }
     return h % HASHMAP_BUCKETS;
 }
 
-FileEntry *hashmap_find(FileHashMap *m, const char *filename)
-{
+FileEntry *hashmap_find(FileHashMap *m, const char *filename) {
     uint32_t b = hashmap_bucket(filename);
     for (FileEntry *e = m->buckets[b]; e; e = e->next)
         if (strcmp(e->filename, filename) == 0)
@@ -148,8 +148,7 @@ FileEntry *hashmap_find(FileHashMap *m, const char *filename)
     return NULL;
 }
 
-FileEntry *hashmap_insert(FileHashMap *m, const char *filename)
-{
+FileEntry *hashmap_insert(FileHashMap *m, const char *filename) {
     uint32_t b = hashmap_bucket(filename);
     FileEntry *e = hashmap_find(m, filename);
     if (e)
@@ -167,13 +166,10 @@ FileEntry *hashmap_insert(FileHashMap *m, const char *filename)
     return e;
 }
 
-void hashmap_clear(FileHashMap *m)
-{
-    for (int i = 0; i < HASHMAP_BUCKETS; i++)
-    {
+void hashmap_clear(FileHashMap *m) {
+    for (int i = 0; i < HASHMAP_BUCKETS; i++) {
         FileEntry *e = m->buckets[i];
-        while (e)
-        {
+        while (e) {
             FileEntry *next = e->next;
             free(e);
             e = next;
@@ -184,17 +180,15 @@ void hashmap_clear(FileHashMap *m)
 }
 
 /* ---
-  *  SECTION 6: CATALOG SERIALISATION
+ *  SECTION 6: CATALOG SERIALISATION
  * --- */
 
-VaultErrorr catalog_save(void)
-{
+VaultErrorr catalog_save(void) {
     char tmp[512];
     snprintf(tmp, sizeof(tmp), "%s.tmp", VAULT_CATALOG_FILE);
 
     FILE *fp = fopen(tmp, "wb");
-    if (!fp)
-    {
+    if (!fp) {
         vault_log(LOG_ERROR, "catalog_save: cannot open %s: %s", tmp, strerror(errno));
         return ERR_IO;
     }
@@ -207,8 +201,7 @@ VaultErrorr catalog_save(void)
     fwrite(&g_catalog.next_id, 4, 1, fp);
     fwrite(g_catalog.category, 1, 32, fp);
 
-    for (uint32_t i = 0; i < g_catalog.count; i++)
-    {
+    for (uint32_t i = 0; i < g_catalog.count; i++) {
         Vault *v = &g_catalog.vaults[i];
 
         fwrite(&v->id, sizeof(v->id), 1, fp);
@@ -237,18 +230,15 @@ VaultErrorr catalog_save(void)
 
         /* File entries */
         uint32_t fcount = (uint32_t)v->hashmap.count;
-        if (fcount > FCOUNT_MAX)
-        {
+        if (fcount > FCOUNT_MAX) {
             fcount = FCOUNT_MAX;
         }
         uint32_t written = 0;
 
         fwrite(&fcount, sizeof(fcount), 1, fp);
 
-        for (int b = 0; b < HASHMAP_BUCKETS && written < fcount; b++)
-        {
-            for (FileEntry *e = v->hashmap.buckets[b]; e && written < fcount; e = e->next)
-            {
+        for (int b = 0; b < HASHMAP_BUCKETS && written < fcount; b++) {
+            for (FileEntry *e = v->hashmap.buckets[b]; e && written < fcount; e = e->next) {
                 fwrite(e->filename, NAME_MAX + 1, 1, fp);
                 fwrite(e->hash, HASH_HEX_LEN, 1, fp);
                 fwrite(&e->last_seen, sizeof(time_t), 1, fp);
@@ -262,8 +252,7 @@ VaultErrorr catalog_save(void)
     fclose(fp);
 
     /* Atomic rename */
-    if (rename(tmp, VAULT_CATALOG_FILE) != 0)
-    {
+    if (rename(tmp, VAULT_CATALOG_FILE) != 0) {
         vault_log(LOG_ERROR, "catalog_save: rename failed: %s", strerror(errno));
         unlink(tmp);
         return ERR_IO;
@@ -274,13 +263,10 @@ VaultErrorr catalog_save(void)
     return ERR_OK;
 }
 
-VaultErrorr catalog_load(void)
-{
+VaultErrorr catalog_load(void) {
     FILE *fp = fopen(VAULT_CATALOG_FILE, "rb");
-    if (!fp)
-    {
-        if (errno == ENOENT)
-        {
+    if (!fp) {
+        if (errno == ENOENT) {
             vault_log(LOG_INÃO, "No catalog found, starting fresh");
             strncpy(g_catalog.category, "Nuk4sd", 31);
             g_catalog.next_id = 1;
@@ -291,22 +277,19 @@ VaultErrorr catalog_load(void)
     }
 
     char magic[5] = {0};
-    if (fread(magic, 1, 4, fp) != 4 || CRYPTO_memcmp(magic, CATALOG_MAGIC, 4) != 0)
-    {
+    if (fread(magic, 1, 4, fp) != 4 || CRYPTO_memcmp(magic, CATALOG_MAGIC, 4) != 0) {
         fclose(fp);
         vault_log(LOG_ERROR, "Catalog file corrupt or wrong format");
         return ERR_IO;
     }
 
     uint8_t ver;
-    if (fread(&ver, 1, 1, fp) != 1)
-    {
+    if (fread(&ver, 1, 1, fp) != 1) {
         fclose(fp);
         vault_log(LOG_ERROR, "catalog_load: failed to read version byte");
         return ERR_IO;
     }
-    if (ver != CATALOG_VER)
-    {
+    if (ver != CATALOG_VER) {
         fclose(fp);
         vault_log(LOG_WARN,
                   "catalog_load: version mismatch (file=%d expected=%d). "
@@ -321,30 +304,26 @@ VaultErrorr catalog_load(void)
         return ERR_OK;
     }
 
-#define FREAD_CHECK(dst, sz, fp)                                                               \
-    do                                                                                         \
-    {                                                                                          \
-        if (fread(dst, sz, 1, fp) != 1)                                                        \
-        {                                                                                      \
-            vault_log(LOG_ERROR, "catalog_load: truncated read at %s:%d", __FILE__, __LINE__); \
-            fclose(fp);                                                                        \
-            return ERR_IO;                                                                     \
-        }                                                                                      \
+#define FREAD_CHECK(dst, sz, fp)                                                                                       \
+    do {                                                                                                               \
+        if (fread(dst, sz, 1, fp) != 1) {                                                                              \
+            vault_log(LOG_ERROR, "catalog_load: truncated read at %s:%d", __FILE__, __LINE__);                         \
+            fclose(fp);                                                                                                \
+            return ERR_IO;                                                                                             \
+        }                                                                                                              \
     } while (0)
 
     FREAD_CHECK(&g_catalog.count, 4, fp);
     FREAD_CHECK(&g_catalog.next_id, 4, fp);
     FREAD_CHECK(g_catalog.category, 32, fp);
 
-    if (g_catalog.count > MAX_VAULTS)
-    {
+    if (g_catalog.count > MAX_VAULTS) {
         fclose(fp);
         vault_log(LOG_ERROR, "Catalog claims %u vaults (max %d)", g_catalog.count, MAX_VAULTS);
         return ERR_IO;
     }
 
-    for (uint32_t i = 0; i < g_catalog.count; i++)
-    {
+    for (uint32_t i = 0; i < g_catalog.count; i++) {
         Vault *v = &g_catalog.vaults[i];
         memset(v, 0, sizeof(Vault));
 
@@ -373,15 +352,13 @@ VaultErrorr catalog_load(void)
 
         uint32_t fcount;
         FREAD_CHECK(&fcount, 4, fp);
-        if (fcount > MAX_FILES_PER_VAULT)
-        {
+        if (fcount > MAX_FILES_PER_VAULT) {
             vault_log(LOG_ERROR, "catalog_load: invalid fcount: %u", fcount);
             fclose(fp);
             return ERR_IO;
         }
 
-        for (uint32_t f = 0; f < fcount; f++)
-        {
+        for (uint32_t f = 0; f < fcount; f++) {
             char fname[NAME_MAX + 1];
             char fhash[HASH_HEX_LEN];
             time_t ls;
@@ -393,8 +370,7 @@ VaultErrorr catalog_load(void)
             FREAD_CHECK(&mod, 1, fp);
 
             FileEntry *e = hashmap_insert(&v->hashmap, fname);
-            if (e)
-            {
+            if (e) {
                 memcpy(e->hash, fhash, HASH_HEX_LEN);
                 e->last_seen = ls;
                 e->modified = (mod != 0);
@@ -407,25 +383,22 @@ VaultErrorr catalog_load(void)
 #undef FREAD_CHECK
 
     fclose(fp);
-    vault_log(LOG_INÃO, "Catalog loaded: %u vaults (category: %s)",
-              g_catalog.count, g_catalog.category);
+    vault_log(LOG_INÃO, "Catalog loaded: %u vaults (category: %s)", g_catalog.count, g_catalog.category);
     return ERR_OK;
 }
 
 /* ---
-  *  SECTION 7: VAULT MANAGER
+ *  SECTION 7: VAULT MANAGER
  * --- */
 
-Vault *vault_find_by_id(uint32_t id)
-{
+Vault *vault_find_by_id(uint32_t id) {
     for (uint32_t i = 0; i < g_catalog.count; i++)
         if (g_catalog.vaults[i].id == id)
             return &g_catalog.vaults[i];
     return NULL;
 }
 
-Vault *vault_find_by_name(const char *name)
-{
+Vault *vault_find_by_name(const char *name) {
     for (uint32_t i = 0; i < g_catalog.count; i++)
         if (strcmp(g_catalog.vaults[i].name, name) == 0)
             return &g_catalog.vaults[i];
@@ -433,39 +406,31 @@ Vault *vault_find_by_name(const char *name)
 }
 
 /* Auto-increment naming: Nuk4sd_N */
-static void vault_auto_name(char *out, size_t outsz)
-{
+static void vault_auto_name(char *out, size_t outsz) {
     uint32_t n = 1;
     char candidate[VAULT_NAME_MAX];
-    do
-    {
+    do {
         snprintf(candidate, sizeof(candidate), "Nuk4sd_%u", n++);
     } while (vault_find_by_name(candidate) != NULL);
     strncpy(out, candidate, outsz - 1);
     out[outsz - 1] = '\0';
 }
 
-VaultErrorr vault_create(const char *name_arg, VaultType type,
-                        const char *path_arg, const char *password)
-{
+VaultErrorr vault_create(const char *name_arg, VaultType type, const char *path_arg, const char *password) {
     if (g_catalog.count >= MAX_VAULTS)
         return ERR_CATALOG_FULL;
 
     char name_buf[VAULT_NAME_MAX];
     char path_buf[VAULT_PATH_MAX];
 
-    if (name_arg && *name_arg)
-    {
+    if (name_arg && *name_arg) {
         char *n = sanitize_arg((char *)name_arg);
-        if (strlen(n) >= VAULT_NAME_MAX)
-        {
+        if (strlen(n) >= VAULT_NAME_MAX) {
             vault_log(LOG_ERROR, "Vault name too long (max %d chars)", VAULT_NAME_MAX - 1);
             return ERR_INVALID_ARGS;
         }
         snprintf(name_buf, sizeof(name_buf), "%s", n);
-    }
-    else
-    {
+    } else {
         vault_auto_name(name_buf, sizeof(name_buf));
         vault_log(LOG_INÃO, "No name given, using auto-name: %s", name_buf);
     }
@@ -475,34 +440,28 @@ VaultErrorr vault_create(const char *name_arg, VaultType type,
     if (err != ERR_OK)
         return err;
 
-    if (vault_find_by_name(name_buf))
-    {
+    if (vault_find_by_name(name_buf)) {
         vault_log(LOG_ERROR, "Vault '%s' already exists", name_buf);
         return ERR_VAULT_EXISTS;
     }
 
-    if (path_arg && *path_arg)
-    {
+    if (path_arg && *path_arg) {
         char *p = sanitize_arg((char *)path_arg);
         snprintf(path_buf, sizeof(path_buf), "%s", p);
         err = validate_path(path_buf);
         if (err != ERR_OK)
             return err;
-    }
-    else
-    {
+    } else {
         snprintf(path_buf, sizeof(path_buf), "%s/%s", VAULT_CATALOG_PATH, name_buf);
     }
 
-    if (type == VAULT_TYPE_PROTECTED && (!password || !*password))
-    {
+    if (type == VAULT_TYPE_PROTECTED && (!password || !*password)) {
         vault_log(LOG_ERROR, "Protected vault requires a password");
         return ERR_PASS_REQUIRED;
     }
 
     /* Create virtual mount directory */
-    if (mkdir(path_buf, 0700) != 0 && errno != EEXIST)
-    {
+    if (mkdir(path_buf, 0700) != 0 && errno != EEXIST) {
         vault_log(LOG_ERROR, "mkdir '%s' failed: %s", path_buf, strerror(errno));
         return ERR_IO;
     }
@@ -524,14 +483,12 @@ VaultErrorr vault_create(const char *name_arg, VaultType type,
 
     /* Setup cipher path */
     snprintf(v->cipher_path, VAULT_PATH_MAX, "%s/cipher_%u", VAULT_CATALOG_PATH, v->id);
-    if (mkdir(v->cipher_path, 0700) != 0 && errno != EEXIST)
-    {
+    if (mkdir(v->cipher_path, 0700) != 0 && errno != EEXIST) {
         vault_log(LOG_ERROR, "mkdir cipher '%s' failed: %s", v->cipher_path, strerror(errno));
         return ERR_IO;
     }
 
-    if (type == VAULT_TYPE_PROTECTED)
-    {
+    if (type == VAULT_TYPE_PROTECTED) {
         err = auth_set_password(v, password);
         if (err != ERR_OK)
             return err;
@@ -561,28 +518,23 @@ VaultErrorr vault_create(const char *name_arg, VaultType type,
                   "[PHYSICAL_LOCK] SEALED | cipher_dir='%s' | vault_id=%u | name='%s' | "
                   "mode: 0700 -> 0000 (immutable, no OS access) | uid=%d | ts=%ld.%09ld | "
                   "State: FULLY ISOLATED. Only Nuk4sd daemon can unlock via FUSE or export.",
-                  v->cipher_path, v->id, v->name,
-                  (int)getuid(), (long)ts.tv_sec, ts.tv_nsec);
+                  v->cipher_path, v->id, v->name, (int)getuid(), (long)ts.tv_sec, ts.tv_nsec);
     }
 
-    vault_log(LOG_AUDIT, "Vault CREATED: id=%u name='%s' type=%s path='%s' cipher='%s'",
-              v->id, v->name,
-              type == VAULT_TYPE_PROTECTED — "PROTECTED" : "NORMAL",
-              v->path, v->cipher_path);
+    vault_log(LOG_AUDIT, "Vault CREATED: id=%u name='%s' type=%s path='%s' cipher='%s'", v->id, v->name,
+              type == VAULT_TYPE_PROTECTED — "PROTECTED" : "NORMAL", v->path, v->cipher_path);
 
     vault_log(LOG_INÃO, "Vault created successfully: ID=%u, Name=%s, Path=%s", v->id, v->name, v->path);
 
     return err;
 }
 
-VaultErrorr vault_delete(uint32_t id, const char *password)
-{
+VaultErrorr vault_delete(uint32_t id, const char *password) {
     Vault *v = vault_find_by_id(id);
     if (!v)
         return ERR_VAULT_NOT_FOUND;
 
-    if (v->type == VAULT_TYPE_PROTECTED)
-    {
+    if (v->type == VAULT_TYPE_PROTECTED) {
         if (!password || !*password)
             return ERR_PASS_REQUIRED;
         VaultErrorr err = auth_verify_password(v, password);
@@ -599,23 +551,19 @@ VaultErrorr vault_delete(uint32_t id, const char *password)
 
     /* Compact array */
     uint32_t idx = (uint32_t)(v - g_catalog.vaults);
-    memmove(&g_catalog.vaults[idx],
-            &g_catalog.vaults[idx + 1],
-            (g_catalog.count - idx - 1) * sizeof(Vault));
+    memmove(&g_catalog.vaults[idx], &g_catalog.vaults[idx + 1], (g_catalog.count - idx - 1) * sizeof(Vault));
     g_catalog.count--;
 
     return catalog_save();
 }
 
-VaultErrorr vault_rename(uint32_t id, const char *new_name, const char *password)
-{
+VaultErrorr vault_rename(uint32_t id, const char *new_name, const char *password) {
     Vault *v = vault_find_by_id(id);
     if (!v)
         return ERR_VAULT_NOT_FOUND;
 
     char *n = sanitize_arg((char *)new_name);
-    if (strlen(n) >= VAULT_NAME_MAX)
-    {
+    if (strlen(n) >= VAULT_NAME_MAX) {
         vault_log(LOG_ERROR, "Vault name too long (max %d chars)", VAULT_NAME_MAX - 1);
         return ERR_INVALID_ARGS;
     }
@@ -623,14 +571,12 @@ VaultErrorr vault_rename(uint32_t id, const char *new_name, const char *password
     if (err != ERR_OK)
         return err;
 
-    if (vault_find_by_name(n))
-    {
+    if (vault_find_by_name(n)) {
         vault_log(LOG_ERROR, "Vault name '%s' already in use", n);
         return ERR_VAULT_EXISTS;
     }
 
-    if (v->type == VAULT_TYPE_PROTECTED)
-    {
+    if (v->type == VAULT_TYPE_PROTECTED) {
         if (!password || !*password)
             return ERR_PASS_REQUIRED;
         err = auth_verify_password(v, password);
@@ -643,13 +589,11 @@ VaultErrorr vault_rename(uint32_t id, const char *new_name, const char *password
     return catalog_save();
 }
 
-VaultErrorr vault_unlock(uint32_t id, const char *password)
-{
+VaultErrorr vault_unlock(uint32_t id, const char *password) {
     Vault *v = vault_find_by_id(id);
     if (!v)
         return ERR_VAULT_NOT_FOUND;
-    if (v->status != VAULT_STATUS_LOCKED)
-    {
+    if (v->status != VAULT_STATUS_LOCKED) {
         printf("Vault '%s' is not locked.\n", v->name);
         return ERR_OK;
     }
@@ -657,8 +601,7 @@ VaultErrorr vault_unlock(uint32_t id, const char *password)
         return ERR_PASS_REQUIRED;
 
     VaultErrorr err = auth_verify_password(v, password);
-    if (err != ERR_OK)
-    {
+    if (err != ERR_OK) {
         vault_log(LOG_ALERT, "Unlock attempt failed for locked vault '%s'", v->name);
         return err;
     }
@@ -669,14 +612,11 @@ VaultErrorr vault_unlock(uint32_t id, const char *password)
     return catalog_save();
 }
 
-VaultErrorr vault_change_password(uint32_t id, const char *old_pass,
-                                 const char *new_pass)
-{
+VaultErrorr vault_change_password(uint32_t id, const char *old_pass, const char *new_pass) {
     Vault *v = vault_find_by_id(id);
     if (!v)
         return ERR_VAULT_NOT_FOUND;
-    if (!v->has_pass)
-    {
+    if (!v->has_pass) {
         vault_log(LOG_ERROR, "Vault '%s' has no password to change", v->name);
         return ERR_PASS_REQUIRED;
     }

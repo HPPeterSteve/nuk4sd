@@ -34,9 +34,9 @@ int container_whitelist_exclude(VaultContainer *c) {
     }
     c->whitelist_excluded = 1;
     vault_log(LOG_WARN,
-        "[CONTAINER] whitelist excluída para container '%s' (--white-list -e)"
-        " — todas as operações seladas bloqueadas",
-        c->path);
+              "[CONTAINER] whitelist excluída para container '%s' (--white-list -e)"
+              " — todas as operações seladas bloqueadas",
+              c->path);
     return 0;
 }
 
@@ -57,9 +57,7 @@ int container_whitelist_restore(VaultContainer *c) {
         return -1;
     }
     c->whitelist_excluded = 0;
-    vault_log(LOG_INFO,
-        "[CONTAINER] whitelist restaurada para container '%s' (--white-list -r)",
-        c->path);
+    vault_log(LOG_INFO, "[CONTAINER] whitelist restaurada para container '%s' (--white-list -r)", c->path);
     return 0;
 }
 
@@ -71,8 +69,10 @@ int container_whitelist_restore(VaultContainer *c) {
  *  Não loga — deixa o chamador logar com o contexto correto.
  * ═══════════════════════════════════════════════════════════════════════════ */
 int container_is_operable(const VaultContainer *c) {
-    if (!c) return 0;
+    if (!c)
+        return 0;
     /* Selado + whitelist excluída -> nenhuma operação permitida */
-    if (c->sealed && c->whitelist_excluded) return 0;
+    if (c->sealed && c->whitelist_excluded)
+        return 0;
     return 1;
 }

@@ -1,21 +1,20 @@
 #include "sandbox.h"
 #include <uuid/uuid.h>
 /*
-* codigo fonte responsável pela flag de --uuid
-* pai cria um processo supervisor para o sandbox e cria processo filho
-* espera o binario criar o sandbox e pega uuid
-* pega o uuid do sandbox, pegando o caminho daquele binario
-* filho aguarda o pai ler o /proc/[pid]/exe e verificar se é o binario original
-* filho prepara um novo nome para o processo
-* se sim, monitorar uuid fornecido ja pelas structs
-* se nao, ele para de monitorar e deixa o processo vivo. isso não é trabalho do --uuid
-* cria um nome hasheado daquele processo
-* verifica a cada momento se o processo deu exit code, se sim, ele encerra também
-*/
+ * codigo fonte responsável pela flag de --uuid
+ * pai cria um processo supervisor para o sandbox e cria processo filho
+ * espera o binario criar o sandbox e pega uuid
+ * pega o uuid do sandbox, pegando o caminho daquele binario
+ * filho aguarda o pai ler o /proc/[pid]/exe e verificar se é o binario original
+ * filho prepara um novo nome para o processo
+ * se sim, monitorar uuid fornecido ja pelas structs
+ * se nao, ele para de monitorar e deixa o processo vivo. isso não é trabalho do --uuid
+ * cria um nome hasheado daquele processo
+ * verifica a cada momento se o processo deu exit code, se sim, ele encerra também
+ */
 #ifdef __linux__
 
-static int hash_string(const char *str)
-{
+static int hash_string(const char *str) {
     unsigned int hash = 5381;
     int c;
     while ((c = (unsigned char)*str++)) {
@@ -24,8 +23,7 @@ static int hash_string(const char *str)
     return (int)(hash & 0x7FFFFFFF);
 }
 
-int setup_uuid(UuidArgs args)
-{
+int setup_uuid(UuidArgs args) {
     uuid_t uuid;
     char uuid_str[37];
     int exitcode = 0;
@@ -64,8 +62,7 @@ int setup_uuid(UuidArgs args)
 
     setenv("NUK4SD_SANDBOX_UUID", uuid_str, 1);
 
-    vault_log(LOG_INFO, "[uuid] Process %d with uuid %s configured successfully",
-              (int)args.pid, uuid_str);
+    vault_log(LOG_INFO, "[uuid] Process %d with uuid %s configured successfully", (int)args.pid, uuid_str);
 
     /* limpa dados sensíveis da stack */
     explicit_bzero(uuid_str, sizeof(uuid_str));
@@ -77,9 +74,9 @@ int setup_uuid(UuidArgs args)
     return exitcode;
 }
 
-int wait_init_binary(UuidArgs args)
-{
-    if (args.pid <= 0) return -1;
+int wait_init_binary(UuidArgs args) {
+    if (args.pid <= 0)
+        return -1;
 
     vault_log(LOG_INFO, "[uuid] Supervisor checking child process pid: %d", (int)args.pid);
 
@@ -102,24 +99,22 @@ int wait_init_binary(UuidArgs args)
 
     /* verifica se o caminho absoluto do executavel é igual ao original */
     if (args.original_binary && strcmp(args.original_binary, readed_path) != 0) {
-        vault_log(LOG_ERROR, "[uuid] Binary path does not match the original path: %s (expected: %s)",
-                  readed_path, args.original_binary);
+        vault_log(LOG_ERROR, "[uuid] Binary path does not match the original path: %s (expected: %s)", readed_path,
+                  args.original_binary);
         return -1;
     }
 
     return 0;
 }
 
-#else  /* !__linux__ */
+#else /* !__linux__ */
 
-int setup_uuid(UuidArgs args)
-{
+int setup_uuid(UuidArgs args) {
     (void)args;
     return 0;
 }
 
-int wait_init_binary(UuidArgs args)
-{
+int wait_init_binary(UuidArgs args) {
     (void)args;
     return 0;
 }

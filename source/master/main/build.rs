@@ -48,27 +48,19 @@ fn main() {
     /* ── CLI interface ──────────────────────────────────────────────────────
      * vault_cli.c: parser principal + comandos. vault_cli_log.c: log colorido.
      * preset.h fica em sandbox/ mas é resolvível por todos via -I sandbox. */
-    let cli = [
-        "c_src/cli/vault_cli.c",
-        "c_src/cli/vault_cli_log.c",
-    ];
+    let cli = ["c_src/cli/vault_cli.c", "c_src/cli/vault_cli_log.c"];
 
     /* ── Container subsystem ────────────────────────────────────────────────
      * overlay.c: montagem overlayfs com checagem WORM + sealed/whitelist.
      * container.c: funções de política (whitelist exclude/restore). */
-    let container = [
-        "c_src/container/overlay.c",
-        "c_src/container/container.c",
-    ];
+    let container = ["c_src/container/overlay.c", "c_src/container/container.c"];
 
     /* ── Experimental subsystem ───────────────────────────────────────────── */
-    let experimental = [
-        "c_src/experimental/nukfile.c",
-        "c_src/experimental/nuk_sandbox.c",
-    ];
+    let experimental = ["c_src/experimental/nukfile.c", "c_src/experimental/nuk_sandbox.c"];
 
     // Todos os sources num único iterador para o loop de compilação
-    let all_sources: Vec<&str> = vault.iter()
+    let all_sources: Vec<&str> = vault
+        .iter()
         .chain(sandbox.iter())
         .chain(cli.iter())
         .chain(container.iter())
@@ -85,18 +77,18 @@ fn main() {
 
         let mut cmd = C::new("gcc");
         cmd.args([
-            "-Oz",                          // Máxima otimização de tamanho
-            "-fstack-protector-strong",      // FIX auditoria: canaries em TODAS as funções C
-            "-D_FORTIFY_SOURCE=3",           // FIX auditoria: fortifica memcpy/memset/vsprintf
+            "-Oz",                      // Máxima otimização de tamanho
+            "-fstack-protector-strong", // FIX auditoria: canaries em TODAS as funções C
+            "-D_FORTIFY_SOURCE=3",      // FIX auditoria: fortifica memcpy/memset/vsprintf
             "-fno-asynchronous-unwind-tables",
             "-fno-unwind-tables",
-            "-fdata-sections",              // Permite --gc-sections por dado
-            "-ffunction-sections",          // Permite --gc-sections por função
-            "-fmerge-all-constants",        // Funde constantes duplicadas
-            "-fno-ident",                   // Remove .comment com versão do GCC
-            "-fvisibility=hidden",          // Oculta símbolos internos do .a
-            "-fno-plt",                     // Elimina trampolins PLT desnecessários
-            "-fno-exceptions",              // Sem C++ exceptions (proj é C puro)
+            "-fdata-sections",       // Permite --gc-sections por dado
+            "-ffunction-sections",   // Permite --gc-sections por função
+            "-fmerge-all-constants", // Funde constantes duplicadas
+            "-fno-ident",            // Remove .comment com versão do GCC
+            "-fvisibility=hidden",   // Oculta símbolos internos do .a
+            "-fno-plt",              // Elimina trampolins PLT desnecessários
+            "-fno-exceptions",       // Sem C++ exceptions (proj é C puro)
             "-D_FILE_OFFSET_BITS=64",
             "-DVAULT_FFI_BUILD",
             "-fPIC",
@@ -108,11 +100,16 @@ fn main() {
              *
              * Ordem importa: vault primeiro (vault_core.h é a base de tudo),
              * depois sandbox (sandbox.h inclui vault_core.h), cli e container. */
-            "-I", "c_src/vault",
-            "-I", "c_src/sandbox",
-            "-I", "c_src/cli",
-            "-I", "c_src/container",
-            "-I", "c_src/experimental",
+            "-I",
+            "c_src/vault",
+            "-I",
+            "c_src/sandbox",
+            "-I",
+            "c_src/cli",
+            "-I",
+            "c_src/container",
+            "-I",
+            "c_src/experimental",
             i,
             "-o",
             &p,
@@ -133,24 +130,19 @@ fn main() {
 
     let l = format!("{}/libvault_security.a", o);
 
-    assert!(C::new("ar")
-        .args(["rcs", &l])
-        .args(&x)
-        .status()
-        .unwrap()
-        .success());
+    assert!(C::new("ar").args(["rcs", &l]).args(&x).status().unwrap().success());
 
     println!("cargo:rustc-link-search=native={}", o);
     println!("cargo:rustc-link-lib=static=vault_security");
 
-    println!("cargo:rustc-link-arg=-Wl,--gc-sections");  // Remove seções não usadas
-    // println!("cargo:rustc-link-arg=-Wl,--strip-all");     // Remove TODOS os símbolos
-    println!("cargo:rustc-link-arg=-Wl,--as-needed");    // Só linka libs realmente usadas
-    // FIX auditoria de segurança: RELRO reativado — a GOT read-only é uma mitigação
-    // padrão contra corrupção de ponteiros de função (sobrescrita de GOT).
-    // O custo de performance é irrelevante para uma ferramenta de linha de comando.
+    println!("cargo:rustc-link-arg=-Wl,--gc-sections"); // Remove seções não usadas
+                                                        // println!("cargo:rustc-link-arg=-Wl,--strip-all");     // Remove TODOS os símbolos
+    println!("cargo:rustc-link-arg=-Wl,--as-needed"); // Só linka libs realmente usadas
+                                                      // FIX auditoria de segurança: RELRO reativado — a GOT read-only é uma mitigação
+                                                      // padrão contra corrupção de ponteiros de função (sobrescrita de GOT).
+                                                      // O custo de performance é irrelevante para uma ferramenta de linha de comando.
     println!("cargo:rustc-link-arg=-Wl,-z,relro");
-    println!("cargo:rustc-link-arg=-Wl,-z,now");         // BIND_NOW: resolve todos os símbolos na carga
+    println!("cargo:rustc-link-arg=-Wl,-z,now"); // BIND_NOW: resolve todos os símbolos na carga
 
     println!("cargo:rustc-link-lib=ssl");
     println!("cargo:rustc-link-lib=crypto");

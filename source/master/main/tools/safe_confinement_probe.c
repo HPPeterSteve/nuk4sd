@@ -17,8 +17,7 @@ static int check_denied(const char *name, int rc, int expected_errno) {
         printf("PASS|%s|blocked|errno=%d|%s\n", name, errno, strerror(errno));
         return 0;
     }
-    printf("FAIL|%s|unexpected-result|rc=%d|errno=%d|%s\n",
-           name, rc, errno, strerror(errno));
+    printf("FAIL|%s|unexpected-result|rc=%d|errno=%d|%s\n", name, rc, errno, strerror(errno));
     return 1;
 }
 
@@ -30,8 +29,7 @@ static int check_open_denied(const char *name, const char *path) {
         printf("FAIL|%s|write-open-succeeded|path=%s\n", name, path);
         return 1;
     }
-    printf("PASS|%s|blocked|path=%s|errno=%d|%s\n",
-           name, path, errno, strerror(errno));
+    printf("PASS|%s|blocked|path=%s|errno=%d|%s\n", name, path, errno, strerror(errno));
     return 0;
 }
 
@@ -47,8 +45,7 @@ int main(void) {
 
     struct stat st;
     if (stat("/tmp", &st) == 0)
-        printf("INFO|tmp|mode=%o|uid=%u|gid=%u\n", st.st_mode & 07777,
-               (unsigned)st.st_uid, (unsigned)st.st_gid);
+        printf("INFO|tmp|mode=%o|uid=%u|gid=%u\n", st.st_mode & 07777, (unsigned)st.st_uid, (unsigned)st.st_gid);
 
     fails += check_open_denied("host_etc_hosts_write", "/etc/hosts");
     fails += check_open_denied("host_etc_passwd_write", "/etc/passwd");

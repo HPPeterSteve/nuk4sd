@@ -18,11 +18,11 @@ mod daemon;
 mod ffi;
 mod log;
 mod manual;
+#[cfg(target_os = "linux")]
+pub mod oci;
 mod path_assistant;
 mod repl;
 mod sys_info;
-#[cfg(target_os = "linux")]
-pub mod oci;
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
@@ -79,7 +79,10 @@ fn main() {
         if let Some(exe_dir) = exe_path.parent() {
             let meta_path = exe_dir.join(".vault_container_meta");
             if meta_path.exists() {
-                println!("[Nuk4sd] Detectado modo Vault-Container (auto-execução). Lendo {}...", meta_path.display());
+                println!(
+                    "[Nuk4sd] Detectado modo Vault-Container (auto-execução). Lendo {}...",
+                    meta_path.display()
+                );
                 // No futuro ler o JSON/struct aqui e chamar ffi::run_sandbox
                 println!("[Nuk4sd] TODO: Iniciar container via ffi::run_sandbox usando os metadados do pacote.");
                 std::process::exit(0);
@@ -87,12 +90,9 @@ fn main() {
         }
     }
 
-
-
     /* --help and --version must never touch catalog.dat.
      * Detect them early and delegate directly to the CLI without init. */
-    let is_info_only = args.len() == 2 &&
-        (args[1] == "--help" || args[1] == "-h" || args[1] == "--version");
+    let is_info_only = args.len() == 2 && (args[1] == "--help" || args[1] == "-h" || args[1] == "--version");
 
     /* Inicializa core C (loads catalog, starts monitor thread, etc.)
      * Skipped for pure read-only informational flags. */
@@ -108,7 +108,9 @@ fn main() {
 
     /* Ctrl+C graceful shutdown */
     ctrlc::set_handler(|| {
-        unsafe { vault_ffi_shutdown(); }
+        unsafe {
+            vault_ffi_shutdown();
+        }
         std::process::exit(0);
     })
     .expect("Error setting Ctrl+C handler");
@@ -122,9 +124,7 @@ fn main() {
 
         let c_ptrs: Vec<*const c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
 
-        unsafe {
-            vault_cli_parse_and_exec(c_ptrs.len() as c_int, c_ptrs.as_ptr())
-        }
+        unsafe { vault_cli_parse_and_exec(c_ptrs.len() as c_int, c_ptrs.as_ptr()) }
     } else {
         /* ── Modo interativo: REPL ───────────────────────────────────── */
         repl::run();
@@ -132,7 +132,9 @@ fn main() {
     };
 
     if !is_info_only {
-        unsafe { vault_ffi_shutdown(); }
+        unsafe {
+            vault_ffi_shutdown();
+        }
     }
     std::process::exit(exit_code);
 }

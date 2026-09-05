@@ -14,8 +14,8 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 const PROTOCOL: &str = "nuk4sd-daemon.v1";
 const MAX_LINE_BYTES: usize = 16 * 1024;
@@ -52,11 +52,21 @@ impl Drop for RuntimeGuard {
 }
 
 fn response_ok(data: Value) -> Response {
-    Response { protocol: PROTOCOL, ok: true, data: Some(data), error: None }
+    Response {
+        protocol: PROTOCOL,
+        ok: true,
+        data: Some(data),
+        error: None,
+    }
 }
 
 fn response_err(message: impl Into<String>) -> Response {
-    Response { protocol: PROTOCOL, ok: false, data: None, error: Some(message.into()) }
+    Response {
+        protocol: PROTOCOL,
+        ok: false,
+        data: None,
+        error: Some(message.into()),
+    }
 }
 
 fn send(stream: &mut UnixStream, response: Response) -> std::io::Result<()> {
@@ -88,18 +98,24 @@ fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
 
 #[cfg(not(target_os = "linux"))]
 fn peer_uid(_stream: &UnixStream) -> std::io::Result<u32> {
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "peer credentials unavailable"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "peer credentials unavailable",
+    ))
 }
 
 fn list_vaults() -> Result<Value, String> {
     let entries = ffi::list_vaults().map_err(|e| e.message())?;
-    let values = entries.into_iter().map(|entry| {
-        json!({
-            "id": entry.id,
-            "path": entry.path,
-            "status": entry.status.label(),
+    let values = entries
+        .into_iter()
+        .map(|entry| {
+            json!({
+                "id": entry.id,
+                "path": entry.path,
+                "status": entry.status.label(),
+            })
         })
-    }).collect::<Vec<_>>();
+        .collect::<Vec<_>>();
     Ok(json!({ "vaults": values }))
 }
 
@@ -110,7 +126,9 @@ fn handle_request(request: Request) -> Response {
     match request.op.as_str() {
         "health" => response_ok(json!({ "ready": true, "pid": std::process::id() })),
         "status" => {
-            let Some(id) = request.vault_id else { return response_err("vault_id_required"); };
+            let Some(id) = request.vault_id else {
+                return response_err("vault_id_required");
+            };
             match ffi::status(id) {
                 Ok(status) => response_ok(json!({ "id": id, "status": status.label() })),
                 Err(error) => response_err(error.message()),
@@ -180,7 +198,12 @@ fn acquire_guard(dir: &Path, socket: &Path, pid: &Path) -> std::io::Result<Runti
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o600))?;
     fs::write(pid, format!("{}\n", std::process::id()))?;
     fs::set_permissions(pid, fs::Permissions::from_mode(0o600))?;
-    Ok(RuntimeGuard { socket: socket.to_path_buf(), pid: pid.to_path_buf(), lock, _lock_file: lock_file })
+    Ok(RuntimeGuard {
+        socket: socket.to_path_buf(),
+        pid: pid.to_path_buf(),
+        lock,
+        _lock_file: lock_file,
+    })
 }
 
 pub fn run(socket: PathBuf, pid: PathBuf, runtime_dir: PathBuf) -> Result<(), String> {
@@ -189,17 +212,17 @@ pub fn run(socket: PathBuf, pid: PathBuf, runtime_dir: PathBuf) -> Result<(), St
     if socket.exists() {
         return Err("socket_already_exists".into());
     }
-    let guard = acquire_guard(&runtime_dir, &socket, &pid)
-        .map_err(|e| format!("lock_or_pid: {e}"))?;
+    let guard = acquire_guard(&runtime_dir, &socket, &pid).map_err(|e| format!("lock_or_pid: {e}"))?;
     let listener = UnixListener::bind(&socket).map_err(|e| format!("bind: {e}"))?;
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("socket_permissions: {e}"))?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).map_err(|e| format!("socket_permissions: {e}"))?;
 
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
     ctrlc::set_handler(move || signal_running.store(false, Ordering::SeqCst))
         .map_err(|e| format!("signal_handler: {e}"))?;
-    listener.set_nonblocking(true).map_err(|e| format!("nonblocking: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("nonblocking: {e}"))?;
     let expected_uid = unsafe { libc::geteuid() };
 
     while running.load(Ordering::SeqCst) {
@@ -221,17 +244,27 @@ mod tests {
 
     #[test]
     fn rejects_unknown_operation() {
-        let response = handle_request(Request { protocol: PROTOCOL.into(), op: "shell".into(), vault_id: None });
+        let response = handle_request(Request {
+            protocol: PROTOCOL.into(),
+            op: "shell".into(),
+            vault_id: None,
+        });
         assert!(!response.ok);
         assert_eq!(response.error.as_deref(), Some("operation_not_allowlisted"));
     }
 
     #[test]
     fn rejects_wrong_protocol() {
-        let response = handle_request(Request { protocol: "other".into(), op: "health".into(), vault_id: None });
+        let response = handle_request(Request {
+            protocol: "other".into(),
+            op: "health".into(),
+            vault_id: None,
+        });
         assert!(!response.ok);
         assert_eq!(response.error.as_deref(), Some("unsupported_protocol"));
     }
 }
 
-pub fn protocol_name() -> &'static str { PROTOCOL }
+pub fn protocol_name() -> &'static str {
+    PROTOCOL
+}

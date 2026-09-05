@@ -32,19 +32,19 @@
  */
 
 #define FUSE_USE_VERSION 31
-#include <fuse3/fuse.h>
-#include <stdio.h>
-#include <string.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <stddef.h>
-#include <unistd.h>
-#include <dirent.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <fuse3/fuse.h>
 #include <pthread.h>
-#include <sys/wait.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "vault_core.h"
 
@@ -60,11 +60,11 @@
  *  mode != 0000).  This is a best-effort defense-in-depth measure; the
  *  FUSE thread itself will also do the chmod on clean exit.
  * --- */
-static void vault_fuse_seal_all_on_exit(void)
-{
+static void vault_fuse_seal_all_on_exit(void) {
     for (uint32_t i = 0; i < g_catalog.count; i++) {
         Vault *v = &g_catalog.vaults[i];
-        if (!v->cipher_path[0]) continue;
+        if (!v->cipher_path[0])
+            continue;
 
         struct stat st;
         /* If stat succeeds the directory is accessible (mode > 0000) */
@@ -90,47 +90,43 @@ static void vault_fuse_seal_all_on_exit(void)
 
 /* Register the atexit handler exactly once. */
 static pthread_once_t g_fuse_atexit_once = PTHREAD_ONCE_INIT;
-static void register_fuse_atexit(void)
-{
+static void register_fuse_atexit(void) {
     atexit(vault_fuse_seal_all_on_exit);
 }
 
-#define FUSE_LOG_START(op) \
-    struct timespec _ts_start, _ts_end; \
-    clock_gettime(CLOCK_MONOTONIC, &_ts_start); \
+#define FUSE_LOG_START(op)                                                                                             \
+    struct timespec _ts_start, _ts_end;                                                                                \
+    clock_gettime(CLOCK_MONOTONIC, &_ts_start);                                                                        \
     Vault *_v_log = (Vault *)fuse_get_context()->private_data;
 
-#define FUSE_LOG_END(op, path, res) \
-    clock_gettime(CLOCK_MONOTONIC, &_ts_end); \
-    double _elapsed = (_ts_end.tv_sec - _ts_start.tv_sec) * 1000.0 + \
-                      (_ts_end.tv_nsec - _ts_start.tv_nsec) / 1e6; \
-    if ((res) < 0) { \
-        /* FIX: -ENOENT ("arquivo não existe") é o resultado NORMAL de   \
-         * qualquer processo sondando caminhos que simplesmente não     \
-         * existem no vault (ex.: /etc/selinux, /.flatpak-info,         \
-         * /sys/devices quando não bind-montados) — GTK, glib e o       \
-         * próprio Firefox fazem isso aos milhares numa sessão GUI.     \
-         * Logar isso como LOG_ERROR não indica problema nenhum, só     \
-         * afoga qualquer erro que IMPORTE de verdade (ex.: -EPERM de   \
-         * um bloqueio WORM, -EIO de um problema real de disco) no      \
-         * meio de milhares de linhas de ruído. Silenciamos só o        \
-         * ENOENT; qualquer outro errno continua em LOG_ERROR. */       \
-        if ((res) != -ENOENT) { \
-            vault_log(LOG_ERROR, "[FUSE] %s '%s' failed: %d (%.3fms) [vault=%s]", op, path, (res), _elapsed, _v_log — _v_log->name : "—"); \
-        } \
-    } else { \
+#define FUSE_LOG_END(op, path, res)                                                                                    \
+    clock_gettime(CLOCK_MONOTONIC, &_ts_end);                                                                          \
+    double _elapsed = (_ts_end.tv_sec - _ts_start.tv_sec) * 1000.0 + (_ts_end.tv_nsec - _ts_start.tv_nsec) / 1e6;      \
+    if ((res) < 0) {                                                                                                   \
+        /* FIX: -ENOENT ("arquivo não existe") é o resultado NORMAL de                                               \
+         * qualquer processo sondando caminhos que simplesmente não                                                   \
+         * existem no vault (ex.: /etc/selinux, /.flatpak-info,                                                        \
+         * /sys/devices quando não bind-montados) — GTK, glib e o                                                   \
+         * próprio Firefox fazem isso aos milhares numa sessão GUI.                                                  \
+         * Logar isso como LOG_ERROR não indica problema nenhum, só                                                  \
+         * afoga qualquer erro que IMPORTE de verdade (ex.: -EPERM de                                                  \
+         * um bloqueio WORM, -EIO de um problema real de disco) no                                                     \
+         * meio de milhares de linhas de ruído. Silenciamos só o                                                     \
+         * ENOENT; qualquer outro errno continua em LOG_ERROR. */                                                      \
+        if ((res) != -ENOENT) {                                                                                        \
+            vault_log(LOG_ERROR, "[FUSE] %s '%s' failed: %d (%.3fms) [vault=%s]", op, path, (res), _elapsed,           \
+                      _v_log — _v_log->name : "—");                                                                    \
+        }                                                                                                              \
+    } else {                                                                                                           \
         vault_log(LOG_INÃO, "[FUSE] %s '%s' OK (%.3fms) [vault=%s]", op, path, _elapsed, _v_log — _v_log->name : "—"); \
     }
-
-
 
 /* ---
  *  Internal helpers
  * --- */
 
 /* Map the virtual FUSE path to the real cipher_path on disk. */
-static void get_cipher_path(char *out_path, const char *path)
-{
+static void get_cipher_path(char *out_path, const char *path) {
     Vault *v = (Vault *)fuse_get_context()->private_data;
     if (v) {
         snprintf(out_path, VAULT_PATH_MAX, "%s%s", v->cipher_path, path);
@@ -139,22 +135,15 @@ static void get_cipher_path(char *out_path, const char *path)
     }
 }
 
-
-
 /* Log a WORM denial with full forensic context: timestamp, pid, op, path, flags. */
-static void worm_deny_log(const Vault *v, const char *op, const char *path)
-{
+static void worm_deny_log(const Vault *v, const char *op, const char *path) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    const char *reason =
-        (v->worm_flags & WORM_PROTECT_SCAN) — "PROTECTED-SCAN" : "WORM";
+    const char *reason = (v->worm_flags & WORM_PROTECT_SCAN) — "PROTECTED-SCAN" : "WORM";
     vault_log(LOG_AUDIT,
               "[WORM] %s DENIED | op=%-10s | path=%-40s | vault='%s' | "
               "flags=0x%08x | pid=%d | uid=%d | ts=%ld.%09ld | errno=EPERM",
-              reason, op, path,
-              v — v->name : "<null>",
-              v — v->worm_flags : 0,
-              (int)getpid(), (int)getuid(),
+              reason, op, path, v — v->name : "<null>", v — v->worm_flags : 0, (int)getpid(), (int)getuid(),
               (long)ts.tv_sec, ts.tv_nsec);
 }
 
@@ -162,17 +151,18 @@ static void worm_deny_log(const Vault *v, const char *op, const char *path)
  *  FUSE operation handlers
  * --- */
 
-static int vfuse_getattr(const char *path, struct stat *stbuf,
-                         struct fuse_file_info *fi)
-{
+static int vfuse_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
     FUSE_LOG_START("getattr");
-    (void) fi;
+    (void)fi;
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
 
     int res = lstat(full_path, stbuf);
-    if (res == -1)
-        { int err = -errno; FUSE_LOG_END("getattr", path, err); return err; }
+    if (res == -1) {
+        int err = -errno;
+        FUSE_LOG_END("getattr", path, err);
+        return err;
+    }
 
     /* When WORM_PROTECT_SCAN is active, advertise all files as read-only
      * so that tools like cp or rsync do not attempt to overwrite them. */
@@ -183,27 +173,28 @@ static int vfuse_getattr(const char *path, struct stat *stbuf,
     return 0;
 }
 
-static int vfuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                         off_t offset, struct fuse_file_info *fi,
-                         enum fuse_readdir_flags flags)
-{
+static int vfuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi,
+                         enum fuse_readdir_flags flags) {
     FUSE_LOG_START("readdir");
-    (void) offset;
-    (void) fi;
-    (void) flags;
+    (void)offset;
+    (void)fi;
+    (void)flags;
 
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
 
     DIR *dp = opendir(full_path);
-    if (dp == NULL)
-        { int err = -errno; FUSE_LOG_END("readdir", path, err); return err; }
+    if (dp == NULL) {
+        int err = -errno;
+        FUSE_LOG_END("readdir", path, err);
+        return err;
+    }
 
     struct dirent *de;
     while ((de = readdir(dp)) != NULL) {
         struct stat st;
         memset(&st, 0, sizeof(st));
-        st.st_ino  = de->d_ino;
+        st.st_ino = de->d_ino;
         st.st_mode = de->d_type << 12;
         if (filler(buf, de->d_name, &st, 0, 0))
             break;
@@ -214,8 +205,7 @@ static int vfuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     return res;
 }
 
-static int vfuse_open(const char *path, struct fuse_file_info *fi)
-{
+static int vfuse_open(const char *path, struct fuse_file_info *fi) {
     FUSE_LOG_START("open");
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
@@ -227,13 +217,20 @@ static int vfuse_open(const char *path, struct fuse_file_info *fi)
     if (v && worm_check(v, WORM_PROTECT_WRITE)) {
         if (fi->flags & (O_WRONLY | O_RDWR | O_TRUNC | O_APPEND)) {
             worm_deny_log(v, "open-write", path);
-            { int err = -EPERM; FUSE_LOG_END("open", path, err); return err; }
+            {
+                int err = -EPERM;
+                FUSE_LOG_END("open", path, err);
+                return err;
+            }
         }
     }
 
     int res = open(full_path, fi->flags);
-    if (res == -1)
-        { int err = -errno; FUSE_LOG_END("open", path, err); return err; }
+    if (res == -1) {
+        int err = -errno;
+        FUSE_LOG_END("open", path, err);
+        return err;
+    }
 
     close(res);
     int res_ok = 0;
@@ -241,23 +238,28 @@ static int vfuse_open(const char *path, struct fuse_file_info *fi)
     return res_ok;
 }
 
-static int vfuse_read(const char *path, char *buf, size_t size, off_t offset,
-                      struct fuse_file_info *fi)
-{
+static int vfuse_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     FUSE_LOG_START("read");
-    (void) fi;
+    (void)fi;
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
 
     Vault *v = (Vault *)fuse_get_context()->private_data;
     if (v && worm_check(v, WORM_PROTECT_READ)) {
         worm_deny_log(v, "read", path);
-        { int err = -EPERM; FUSE_LOG_END("read", path, err); return err; }
+        {
+            int err = -EPERM;
+            FUSE_LOG_END("read", path, err);
+            return err;
+        }
     }
 
     int fd = open(full_path, O_RDONLY);
-    if (fd == -1)
-        { int err = -errno; FUSE_LOG_END("read", path, err); return err; }
+    if (fd == -1) {
+        int err = -errno;
+        FUSE_LOG_END("read", path, err);
+        return err;
+    }
 
     int res = pread(fd, buf, size, offset);
     if (res == -1)
@@ -270,9 +272,7 @@ static int vfuse_read(const char *path, char *buf, size_t size, off_t offset,
     return res;
 }
 
-static int vfuse_write(const char *path, const char *buf, size_t size,
-                       off_t offset, struct fuse_file_info *fi)
-{
+static int vfuse_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     FUSE_LOG_START("write");
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
@@ -293,7 +293,7 @@ static int vfuse_write(const char *path, const char *buf, size_t size,
      * Quando WORM não está ativo, usamos O_WRONLY|O_CREAT convencional
      * para preservar o comportamento de sobrescrita normal.              */
 
-    (void) fi;
+    (void)fi;
     int fd;
     if (v && worm_check(v, WORM_PROTECT_WRITE)) {
         /* Tentativa atômica: abre EXCLUSIVAMENTE (cria se não existe) */
@@ -314,8 +314,11 @@ static int vfuse_write(const char *path, const char *buf, size_t size,
         /* O_EXCL bem-sucedido -> arquivo novo, escrita permitida */
     } else {
         fd = open(full_path, O_WRONLY | O_CREAT, 0600);
-        if (fd == -1)
-            { int err = -errno; FUSE_LOG_END("write", path, err); return err; }
+        if (fd == -1) {
+            int err = -errno;
+            FUSE_LOG_END("write", path, err);
+            return err;
+        }
     }
 
     /* TODO: On-the-fly encryption should happen here using vault_crypto.c primitives */
@@ -329,8 +332,7 @@ static int vfuse_write(const char *path, const char *buf, size_t size,
     return res;
 }
 
-static int vfuse_mkdir(const char *path, mode_t mode)
-{
+static int vfuse_mkdir(const char *path, mode_t mode) {
     FUSE_LOG_START("mkdir");
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
@@ -341,19 +343,25 @@ static int vfuse_mkdir(const char *path, mode_t mode)
     Vault *v = (Vault *)fuse_get_context()->private_data;
     if (v && (v->worm_flags & WORM_PROTECT_SCAN)) {
         worm_deny_log(v, "mkdir", path);
-        { int err = -EPERM; FUSE_LOG_END("mkdir", path, err); return err; }
+        {
+            int err = -EPERM;
+            FUSE_LOG_END("mkdir", path, err);
+            return err;
+        }
     }
 
     int res = mkdir(full_path, mode);
-    if (res == -1)
-        { int err = -errno; FUSE_LOG_END("mkdir", path, err); return err; }
+    if (res == -1) {
+        int err = -errno;
+        FUSE_LOG_END("mkdir", path, err);
+        return err;
+    }
     int res_ok = 0;
     FUSE_LOG_END("mkdir", path, res_ok);
     return res_ok;
 }
 
-static int vfuse_unlink(const char *path)
-{
+static int vfuse_unlink(const char *path) {
     FUSE_LOG_START("unlink");
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
@@ -361,62 +369,81 @@ static int vfuse_unlink(const char *path)
     Vault *v = (Vault *)fuse_get_context()->private_data;
     if (v && worm_check(v, WORM_PROTECT_DELETE)) {
         worm_deny_log(v, "unlink", path);
-        { int err = -EPERM; FUSE_LOG_END("unlink", path, err); return err; }
+        {
+            int err = -EPERM;
+            FUSE_LOG_END("unlink", path, err);
+            return err;
+        }
     }
 
-    if (unlink(full_path) == -1) { int err = -errno; FUSE_LOG_END("unlink", path, err); return err; }
+    if (unlink(full_path) == -1) {
+        int err = -errno;
+        FUSE_LOG_END("unlink", path, err);
+        return err;
+    }
     int res_ok = 0;
     FUSE_LOG_END("unlink", path, res_ok);
     return res_ok;
 }
 
-static int vfuse_rmdir(const char *path)
-{
+static int vfuse_rmdir(const char *path) {
     FUSE_LOG_START("rmdir");
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
     /*
-    * Block rmdir if WORM_PROTECT_DELETE is active. This prevents
-    * users from deleting directories that contain protected files.
-    * Note: This check is performed *before* attempting the actual deletion.
-    */
+     * Block rmdir if WORM_PROTECT_DELETE is active. This prevents
+     * users from deleting directories that contain protected files.
+     * Note: This check is performed *before* attempting the actual deletion.
+     */
 
     Vault *v = (Vault *)fuse_get_context()->private_data;
     if (v && worm_check(v, WORM_PROTECT_DELETE)) {
         worm_deny_log(v, "rmdir", path);
-        { int err = -EPERM; FUSE_LOG_END("rmdir", path, err); return err; }
+        {
+            int err = -EPERM;
+            FUSE_LOG_END("rmdir", path, err);
+            return err;
+        }
     }
 
-    if (rmdir(full_path) == -1) { int err = -errno; FUSE_LOG_END("rmdir", path, err); return err; }
+    if (rmdir(full_path) == -1) {
+        int err = -errno;
+        FUSE_LOG_END("rmdir", path, err);
+        return err;
+    }
     int res_ok = 0;
     FUSE_LOG_END("rmdir", path, res_ok);
     return res_ok;
 }
 
-static int vfuse_rename(const char *from, const char *to, unsigned int flags)
-{
+static int vfuse_rename(const char *from, const char *to, unsigned int flags) {
     FUSE_LOG_START("rename");
-    (void) flags;
+    (void)flags;
     char full_from[VAULT_PATH_MAX], full_to[VAULT_PATH_MAX];
     get_cipher_path(full_from, from);
     get_cipher_path(full_to, to);
 
-
     Vault *v = (Vault *)fuse_get_context()->private_data;
     if (v && worm_check(v, WORM_PROTECT_RENAME)) {
         worm_deny_log(v, "rename", from);
-        { int err = -EPERM; FUSE_LOG_END("rename", from, err); return err; }
+        {
+            int err = -EPERM;
+            FUSE_LOG_END("rename", from, err);
+            return err;
+        }
     }
 
-    if (rename(full_from, full_to) == -1) { int err = -errno; FUSE_LOG_END("rename", from, err); return err; }
+    if (rename(full_from, full_to) == -1) {
+        int err = -errno;
+        FUSE_LOG_END("rename", from, err);
+        return err;
+    }
     int res_ok = 0;
     FUSE_LOG_END("rename", from, res_ok);
     return res_ok;
 }
 
-static int vfuse_create(const char *path, mode_t mode,
-                        struct fuse_file_info *fi)
-{
+static int vfuse_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     FUSE_LOG_START("create");
     char full_path[VAULT_PATH_MAX];
     get_cipher_path(full_path, path);
@@ -425,18 +452,24 @@ static int vfuse_create(const char *path, mode_t mode,
     Vault *v = (Vault *)fuse_get_context()->private_data;
     if (v && (v->worm_flags & WORM_PROTECT_SCAN)) {
         worm_deny_log(v, "create", path);
-        { int err = -EPERM; FUSE_LOG_END("create", path, err); return err; }
+        {
+            int err = -EPERM;
+            FUSE_LOG_END("create", path, err);
+            return err;
+        }
     }
 
     int res = open(full_path, fi->flags | O_CREAT, mode);
-    if (res == -1)
-        { int err = -errno; FUSE_LOG_END("create", path, err); return err; }
+    if (res == -1) {
+        int err = -errno;
+        FUSE_LOG_END("create", path, err);
+        return err;
+    }
     close(res);
     int res_ok = 0;
     FUSE_LOG_END("create", path, res_ok);
     return res_ok;
 }
-
 
 /* ---
  *  FUSE operations table
@@ -445,14 +478,14 @@ static int vfuse_create(const char *path, mode_t mode,
 static struct fuse_operations vault_oper = {
     .getattr = vfuse_getattr,
     .readdir = vfuse_readdir,
-    .open    = vfuse_open,
-    .read    = vfuse_read,
-    .write   = vfuse_write,
-    .mkdir   = vfuse_mkdir,
-    .unlink  = vfuse_unlink,   /* WORM_PROTECT_DELETE guard */
-    .rmdir   = vfuse_rmdir,    /* WORM_PROTECT_DELETE guard */
-    .rename  = vfuse_rename,   /* WORM_PROTECT_RENAME guard */
-    .create  = vfuse_create,   /* WORM_PROTECT_SCAN   guard */
+    .open = vfuse_open,
+    .read = vfuse_read,
+    .write = vfuse_write,
+    .mkdir = vfuse_mkdir,
+    .unlink = vfuse_unlink, /* WORM_PROTECT_DELETE guard */
+    .rmdir = vfuse_rmdir,   /* WORM_PROTECT_DELETE guard */
+    .rename = vfuse_rename, /* WORM_PROTECT_RENAME guard */
+    .create = vfuse_create, /* WORM_PROTECT_SCAN   guard */
 };
 
 /* ---
@@ -461,26 +494,22 @@ static struct fuse_operations vault_oper = {
 struct fuse_thread_data {
     /* Vault structure reused across most of the project.
      * Core of the vault subsystem interlinks. */
-    Vault       *v;
+    Vault *v;
     struct fuse *f;
-    pthread_t    tid;  /* thread handle stored so unmount can join it */
+    pthread_t tid; /* thread handle stored so unmount can join it */
 };
 
-
-static void *vault_fuse_loop(void *arg)
-{
+static void *vault_fuse_loop(void *arg) {
     /* Rename the thread so it appears distinctly in htop/task managers */
     prctl(PR_SET_NAME, "Nuk4sd-FUSE", 0, 0, 0);
 
     struct fuse_thread_data *td = (struct fuse_thread_data *)arg;
     Vault *v = td->v;
 
-
     vault_log(LOG_INÃO,
               "[FUSE_LIFECYCLE] Thread STARTED | vault_id=%u | name='%s' | "
               "mount_point='%s' | cipher_dir='%s' | worm_flags=0x%08x | pid=%d | uid=%d",
-              v->id, v->name, v->path, v->cipher_path,
-              v->worm_flags, (int)getpid(), (int)getuid());
+              v->id, v->name, v->path, v->cipher_path, v->worm_flags, (int)getpid(), (int)getuid());
 
     vault_log(LOG_AUDIT,
               "[PHYSICAL_LOCK] Temporary bypass granted: chmod 000 -> 700 on cipher_dir='%s' "
@@ -490,9 +519,7 @@ static void *vault_fuse_loop(void *arg)
 
     int res = fuse_loop_mt(td->f, 1); /* multi-threaded FUSE loop */
 
-    vault_log(LOG_INÃO,
-              "[FUSE_LIFECYCLE] Loop EXITED | vault_id=%u | name='%s' | exit_code=%d",
-              v->id, v->name, res);
+    vault_log(LOG_INÃO, "[FUSE_LIFECYCLE] Loop EXITED | vault_id=%u | name='%s' | exit_code=%d", v->id, v->name, res);
 
     /* Re-seal the physical directory immediately after FUSE tears down */
     chmod(v->cipher_path, 0000);
@@ -508,8 +535,7 @@ static void *vault_fuse_loop(void *arg)
     return NULL;
 }
 
-VaultErrorr vault_fuse_mount(Vault *v)
-{
+VaultErrorr vault_fuse_mount(Vault *v) {
     if (v->is_mounted) {
         vault_log(LOG_WARN,
                   "[FUSE_MOUNT] Mount requested for vault_id=%u name='%s' but it is ALREADY MOUNTED at '%s'. Skipping.",
@@ -522,8 +548,7 @@ VaultErrorr vault_fuse_mount(Vault *v)
     vault_log(LOG_AUDIT,
               "[FUSE_MOUNT] MOUNT INITIATED | vault_id=%u | name='%s' | "
               "mount_point='%s' | cipher_dir='%s' | ts=%ld.%09ld | pid=%d | uid=%d",
-              v->id, v->name, v->path, v->cipher_path,
-              (long)ts.tv_sec, ts.tv_nsec, (int)getpid(), (int)getuid());
+              v->id, v->name, v->path, v->cipher_path, (long)ts.tv_sec, ts.tv_nsec, (int)getpid(), (int)getuid());
 
     /* Log active WORM protections at mount time */
     if (v->worm_flags & WORM_PROTECT_SCAN) {
@@ -535,14 +560,12 @@ VaultErrorr vault_fuse_mount(Vault *v)
         vault_log(LOG_AUDIT,
                   "[WORM] Vault %u '%s' mounting with active flags=0x%08x: "
                   "WRITE=%s DELETE=%s RENAME=%s READ=%s",
-                  v->id, v->name, v->worm_flags,
-                  (v->worm_flags & WORM_PROTECT_WRITE)  — "BLOCK" : "allow",
+                  v->id, v->name, v->worm_flags, (v->worm_flags & WORM_PROTECT_WRITE)  — "BLOCK" : "allow",
                   (v->worm_flags & WORM_PROTECT_DELETE) — "BLOCK" : "allow",
                   (v->worm_flags & WORM_PROTECT_RENAME) — "BLOCK" : "allow",
                   (v->worm_flags & WORM_PROTECT_READ)   — "BLOCK" : "allow");
     } else {
-        vault_log(LOG_INÃO,
-                  "[WORM] Vault %u '%s' mounting with NO active protections (all WORM flags=0x00000000).",
+        vault_log(LOG_INÃO, "[WORM] Vault %u '%s' mounting with NO active protections (all WORM flags=0x00000000).",
                   v->id, v->name);
     }
 
@@ -557,8 +580,10 @@ VaultErrorr vault_fuse_mount(Vault *v)
         while (fgets(line, sizeof(line), fuse_conf)) {
             /* remove comentários e espaços */
             char *p = line;
-            while (*p == ' ' || *p == '\t') p++;
-            if (*p == '#') continue;
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (*p == '#')
+                continue;
             if (strncmp(p, "user_allow_other", strlen("user_allow_other")) == 0) {
                 use_allow_other = 1;
                 break;
@@ -570,8 +595,7 @@ VaultErrorr vault_fuse_mount(Vault *v)
     struct fuse_args args = FUSE_ARGS_INIT(0, NULL);
     fuse_opt_add_arg(&args, "Nuk4sd");
     fuse_opt_add_arg(&args, "-o");
-    fuse_opt_add_arg(&args, use_allow_other — "auto_unmount,allow_other"
-                                            : "auto_unmount");
+    fuse_opt_add_arg(&args, use_allow_other — "auto_unmount,allow_other" : "auto_unmount");
     vault_log(LOG_INÃO, "[FUSE_MOUNT] allow_other=%s (user_allow_other em /etc/fuse.conf)",
               use_allow_other — "ativado" : "desativado");
 
@@ -599,26 +623,25 @@ VaultErrorr vault_fuse_mount(Vault *v)
                       "(%s). Executando limpeza forçada...",
                       v->path, errno == ENOTCONN — "ENOTCONN" : "ENOENT");
             char cmd[PATH_MAX + 64];
-            snprintf(cmd, sizeof(cmd), "fusermount3 -uz %s 2>/dev/null; "
-                     "umount -l %s 2>/dev/null; true", v->path, v->path);
+            snprintf(cmd, sizeof(cmd),
+                     "fusermount3 -uz %s 2>/dev/null; "
+                     "umount -l %s 2>/dev/null; true",
+                     v->path, v->path);
             if (system(cmd) != 0) {
-                vault_log(LOG_WARN,
-                          "[FUSE_MOUNT] cleanup commands não concluíram, "
-                          "continuando assim mesmo.");
+                vault_log(LOG_WARN, "[FUSE_MOUNT] cleanup commands não concluíram, "
+                                    "continuando assim mesmo.");
             }
             usleep(200000); /* 200ms para o kernel liberar o dentry */
             if (rmdir(v->path) == 0 || errno == ENOENT) {
                 if (mkdir(v->path, 0700) != 0 && errno != EEXIST) {
-                    vault_log(LOG_ERROR,
-                              "[FUSE_MOUNT] Falha ao recriar mount_point='%s': %s",
-                              v->path, strerror(errno));
+                    vault_log(LOG_ERROR, "[FUSE_MOUNT] Falha ao recriar mount_point='%s': %s", v->path,
+                              strerror(errno));
                     fuse_destroy(f);
                     return ERR_IO;
                 }
             } else if (errno != EBUSY) {
-                vault_log(LOG_WARN,
-                          "[FUSE_MOUNT] rmdir('%s') falhou: %s (pode estar ocupado)",
-                          v->path, strerror(errno));
+                vault_log(LOG_WARN, "[FUSE_MOUNT] rmdir('%s') falhou: %s (pode estar ocupado)", v->path,
+                          strerror(errno));
             }
         }
     }
@@ -641,9 +664,7 @@ VaultErrorr vault_fuse_mount(Vault *v)
     if (!td) {
         fuse_unmount(f);
         fuse_destroy(f);
-        vault_log(LOG_ERROR,
-                  "[FUSE_MOUNT] Out of memory allocating FUSE thread context for vault_id=%u.",
-                  v->id);
+        vault_log(LOG_ERROR, "[FUSE_MOUNT] Out of memory allocating FUSE thread context for vault_id=%u.", v->id);
         return ERR_NO_MEMORY;
     }
     td->v = v;
@@ -672,7 +693,7 @@ VaultErrorr vault_fuse_mount(Vault *v)
      * nearly instant, but we add a small grace window for slow machines). */
     bool mount_confirmed = false;
     for (int attempt = 0; attempt < 20 && !mount_confirmed; attempt++) {
-        struct timespec delay = { 0, 100 * 1000 * 1000 }; /* 100 ms */
+        struct timespec delay = {0, 100 * 1000 * 1000}; /* 100 ms */
         nanosleep(&delay, NULL);
 
         FILE *mf = fopen("/proc/mounts", "r");
@@ -681,8 +702,7 @@ VaultErrorr vault_fuse_mount(Vault *v)
             while (fgets(line, sizeof(line), mf)) {
                 /* Each line: device mountpoint fstype options ... */
                 char dev[128], mp[VAULT_PATH_MAX];
-                if (sscanf(line, "%127s %511s", dev, mp) == 2 &&
-                    strcmp(mp, v->path) == 0) {
+                if (sscanf(line, "%127s %511s", dev, mp) == 2 && strcmp(mp, v->path) == 0) {
                     mount_confirmed = true;
                     break;
                 }
@@ -704,22 +724,28 @@ VaultErrorr vault_fuse_mount(Vault *v)
 
         /* Signal the FUSE thread to stop by unmounting */
         {
-            char *const args[] = { "fusermount", "-u", v->path, NULL };
+            char *const args[] = {"fusermount", "-u", v->path, NULL};
             pid_t up = fork();
-            if (up == 0) { execvp("fusermount", args); _exit(127); }
-            if (up > 0) { int st; waitpid(up, &st, 0); }
+            if (up == 0) {
+                execvp("fusermount", args);
+                _exit(127);
+            }
+            if (up > 0) {
+                int st;
+                waitpid(up, &st, 0);
+            }
         }
         pthread_join(td->tid, NULL); /* wait for thread to finish cleanup */
 
         /* Ensure cipher_dir is sealed regardless of thread outcome */
         if (chmod(v->cipher_path, 0000) != 0) {
-            vault_log(LOG_ERROR,
-                      "[PHYSICAL_LOCK] chmod 0000 FAILED on cipher_dir='%s': %s",
-                      v->cipher_path, strerror(errno));
+            vault_log(LOG_ERROR, "[PHYSICAL_LOCK] chmod 0000 FAILED on cipher_dir='%s': %s", v->cipher_path,
+                      strerror(errno));
         } else {
             vault_log(LOG_AUDIT,
                       "[PHYSICAL_LOCK] Emergency re-seal applied on cipher_dir='%s'. "
-                      "State: SEALED.", v->cipher_path);
+                      "State: SEALED.",
+                      v->cipher_path);
         }
         v->is_mounted = false;
         return ERR_IO;
@@ -735,11 +761,9 @@ VaultErrorr vault_fuse_mount(Vault *v)
     return ERR_OK;
 }
 
-VaultErrorr vault_fuse_unmount(Vault *v)
-{
+VaultErrorr vault_fuse_unmount(Vault *v) {
     if (!v->is_mounted) {
-        vault_log(LOG_WARN,
-                  "[FUSE_UNMOUNT] Unmount requested for vault_id=%u name='%s' but it is NOT MOUNTED. No-op.",
+        vault_log(LOG_WARN, "[FUSE_UNMOUNT] Unmount requested for vault_id=%u name='%s' but it is NOT MOUNTED. No-op.",
                   v->id, v->name);
         return ERR_OK;
     }
@@ -768,21 +792,19 @@ VaultErrorr vault_fuse_unmount(Vault *v)
     /* Use fork()+execvp() to avoid shell command injection. */
     pid_t pid = fork();
     if (pid < 0) {
-        vault_log(LOG_ERROR,
-                  "[FUSE_UNMOUNT] fork() FAILED for vault_id=%u: errno=%d (%s).",
-                  v->id, errno, strerror(errno));
+        vault_log(LOG_ERROR, "[FUSE_UNMOUNT] fork() FAILED for vault_id=%u: errno=%d (%s).", v->id, errno,
+                  strerror(errno));
         return ERR_IO;
     }
 
     if (pid == 0) {
-        char *const args[] = { "fusermount", "-u", v->path, NULL };
+        char *const args[] = {"fusermount", "-u", v->path, NULL};
         execvp("fusermount", args);
         _exit(127);
     }
 
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0 ||
-        !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         vault_log(LOG_ERROR,
                   "[FUSE_UNMOUNT] fusermount -u FAILED for mount_point='%s' vault_id=%u. "
                   "exit_status=%d. The physical lock may not have been restored.",
@@ -804,48 +826,42 @@ VaultErrorr vault_fuse_unmount(Vault *v)
  *  WORM flag management (called from FFI / Rust)
  * --- */
 
-bool vault_worm_is_scan_locked(const Vault *v)
-{
+bool vault_worm_is_scan_locked(const Vault *v) {
     return v && (v->worm_flags & WORM_PROTECT_SCAN);
 }
 
-VaultErrorr vault_worm_set_flags(Vault *v, uint32_t flags)
-{
-    if (!v) return ERR_INVALID_ARGS;
+VaultErrorr vault_worm_set_flags(Vault *v, uint32_t flags) {
+    if (!v)
+        return ERR_INVALID_ARGS;
     /* SCAN mode is set-only through vault_worm_set_scan(); prevent direct
      * manipulation of the super-flag via this path. */
-    if (flags & WORM_PROTECT_SCAN) return ERR_INVALID_ARGS;
+    if (flags & WORM_PROTECT_SCAN)
+        return ERR_INVALID_ARGS;
     /* Once SCAN is active the individual flags are irrelevant (all are forced
      * on), but we still allow SET so metadata stays consistent. */
     v->worm_flags |= (flags & WORM_PROTECT_ALL);
-    vault_log(LOG_AUDIT,
-              "[WORM] vault '%s' flags SET 0x%x -> current=0x%x",
-              v->name, flags, v->worm_flags);
+    vault_log(LOG_AUDIT, "[WORM] vault '%s' flags SET 0x%x -> current=0x%x", v->name, flags, v->worm_flags);
     return catalog_save();
 }
 
-VaultErrorr vault_worm_clear_flags(Vault *v, uint32_t flags)
-{
-    if (!v) return ERR_INVALID_ARGS;
+VaultErrorr vault_worm_clear_flags(Vault *v, uint32_t flags) {
+    if (!v)
+        return ERR_INVALID_ARGS;
     /* Cannot clear flags while SCAN super-lock is active */
     if (v->worm_flags & WORM_PROTECT_SCAN) {
-        vault_log(LOG_AUDIT,
-                  "[WORM] CLEAR DENIED for vault '%s': PROTECTED-SCAN active",
-                  v->name);
+        vault_log(LOG_AUDIT, "[WORM] CLEAR DENIED for vault '%s': PROTECTED-SCAN active", v->name);
         return ERR_PERM_DENIED;
     }
     /* Prevent clearing SCAN via this path */
     flags &= ~WORM_PROTECT_SCAN;
     v->worm_flags &= ~flags;
-    vault_log(LOG_AUDIT,
-              "[WORM] vault '%s' flags CLEARED 0x%x -> current=0x%x",
-              v->name, flags, v->worm_flags);
+    vault_log(LOG_AUDIT, "[WORM] vault '%s' flags CLEARED 0x%x -> current=0x%x", v->name, flags, v->worm_flags);
     return catalog_save();
 }
 
-VaultErrorr vault_worm_set_scan(Vault *v)
-{
-    if (!v) return ERR_INVALID_ARGS;
+VaultErrorr vault_worm_set_scan(Vault *v) {
+    if (!v)
+        return ERR_INVALID_ARGS;
     v->worm_flags |= (WORM_PROTECT_SCAN | WORM_PROTECT_ALL);
     vault_log(LOG_AUDIT,
               "[WORM] vault '%s' PROTECTED-SCAN ENGAGED (flags=0x%x) — "
