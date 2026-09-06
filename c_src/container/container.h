@@ -16,14 +16,14 @@
 extern "C" {
 #endif
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Whitelist de operações para containers selados
  *
  *  Por padrão (whitelist_excluded=0), operações na whitelist padrão são
  *  permitidas mesmo com sealed=1. O usuário pode mudar via CLI:
  *    --white-list -e   → container_whitelist_exclude()  [bloqueia tudo]
  *    --white-list -r   → container_whitelist_restore()  [restaura padrão]
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 
 /* Exclui a whitelist — todas as operações seladas são bloqueadas.
  * Equivalente CLI: --white-list -e

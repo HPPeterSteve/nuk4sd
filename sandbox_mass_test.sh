@@ -126,7 +126,7 @@ run_test "gnome-calculator" "office" ""; cleanup_fuse
 
 # ── Testes de segurança: path traversal ─────────────────────────────────────
 echo "" | tee -a "$LOG"
-echo "══════════════════════════════════════════════" | tee -a "$LOG"
+echo "════" | tee -a "$LOG"
 echo "=== Testes de Segurança ===" | tee -a "$LOG"
 
 echo "" | tee -a "$LOG"
@@ -156,7 +156,7 @@ rm -f "$TMPOUT"
 
 # ── Resumo ──────────────────────────────────────────────────────────────────
 echo "" | tee -a "$LOG"
-echo "══════════════════════════════════════════════" | tee -a "$LOG"
+echo "════" | tee -a "$LOG"
 echo "=== RESUMO ===" | tee -a "$LOG"
 echo "  PASS:  $PASS" | tee -a "$LOG"
 echo "  FAIL:  $FAIL" | tee -a "$LOG"

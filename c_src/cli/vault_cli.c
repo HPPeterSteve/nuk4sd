@@ -80,9 +80,9 @@ static int rm_rf_safe(const char *path) {
  * mais abaixo junto com o resto dos helpers de bind mount */
 static void cli_expand_tilde(const char *in, char *out, size_t out_sz);
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  WORM bits — espelha vault_core.h
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 #ifndef WORM_PROTECT_DELETE
 #define WORM_PROTECT_DELETE  (1u << 0)
 #define WORM_PROTECT_RENAME  (1u << 1)
@@ -91,15 +91,15 @@ static void cli_expand_tilde(const char *in, char *out, size_t out_sz);
 #define WORM_PROTECT_READ    (1u << 4)
 #endif
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Bind-mount entry para --ro / --rw / --blacklist
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 /* As estruturas BindEntry e CliConfig foram movidas para preset.h
  * para permitir o uso pelo módulo preflight_scan. */
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Enum de opções longas
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 enum {
     OPT_VAULT = 1000,
     OPT_LS, OPT_INFO, OPT_FILES, OPT_STATUS, OPT_SCAN,
@@ -135,7 +135,7 @@ enum {
     /* limites de recurso */
     OPT_MAX_PROCS, OPT_MAX_MEM, OPT_MAX_FSIZE, OPT_MAX_FDS, OPT_TMP_SIZE,
     /* gerais */
-    OPT_PASSWORD, OPT_VERBOSE, OPT_DEBUG, OPT_JSON, OPT_VERSION, OPT_HELP,
+    OPT_PASSWORD, OPT_VERBOSE, OPT_JSON, OPT_VERSION, OPT_HELP,
     /* strict seccomp */
     OPT_SECCOMP_STRICT = 'q',
     OPT_ALLOW_CLONE3   = 'k',
@@ -229,7 +229,6 @@ static const struct option long_options[] = {
     /* gerais */
     { "password",        required_argument, NULL, OPT_PASSWORD },
     { "verbose",         no_argument,       NULL, OPT_VERBOSE },
-    { "debug",           no_argument,       NULL, OPT_DEBUG },
     { "json",            no_argument,       NULL, OPT_JSON },
     { "version",         no_argument,       NULL, OPT_VERSION },
     { "seccomp-strict",  no_argument,       NULL, 'q' },
@@ -242,9 +241,9 @@ static const struct option long_options[] = {
     { NULL, 0, NULL, 0 }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Helpers
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static void print_ok(const char *msg)   { printf("\033[32m✔ %s\033[0m\n", msg); }
 static void print_err(const char *msg)  { fprintf(stderr, "\033[31m✖ %s\033[0m\n", msg); }
 static void print_warn(const char *msg) { fprintf(stderr, "\033[33m⚠ %s\033[0m\n", msg); }
@@ -270,9 +269,9 @@ static char *read_password_silent(const char *prompt) {
     return buf;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Help
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static void print_help(void) {
     printf(
 "\nNuk4sd — hardened vault & isolation engine\n"
@@ -396,7 +395,6 @@ static void print_help(void) {
 "  --gui                  launch the graphical interface (nuk4sd_gui.py)\n"
 "  --password <pass>      provide password inline (prompted if omitted)\n"
 "  --verbose              verbose output\n"
-"  --debug                debug output (logs de KERN/SEC/AUDIT detalhados)\n"
 "  --json                 JSON output for --status and --scan\n"
 "  --health <pid>          roda checagem de saúde num sandbox já rodando (PID)\n"
 "  --version              show version\n"
@@ -425,7 +423,7 @@ static void print_help(void) {
     );
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Profile loader
  *  Formato: uma flag por linha, linhas com # são comentários
  *
@@ -436,7 +434,7 @@ static void print_help(void) {
  *    --ro /usr/share/fonts
  *    --blacklist ~/.ssh
  *    --blacklist ~/.gnupg
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static void load_profile(CliConfig *cfg, const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) { fprintf(stderr, "⚠ profile '%s' not found\n", path); return; }
@@ -482,9 +480,9 @@ static void load_profile(CliConfig *cfg, const char *path) {
     fclose(f);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Helpers de Parsing
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static long parse_int_arg(const char *s, long min, long max, const char *flag_name, int *err) {
     char *endptr;
     errno = 0;
@@ -502,14 +500,14 @@ static long parse_int_arg(const char *s, long min, long max, const char *flag_na
     return val;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  cli_mkdir_p — cria todos os componentes intermediários do path
  *  path: caminho COMPLETO do diretório a criar (não inclui nome de arquivo)
  *
  *  Necessário para --ro/--rw: mkdir() simples falha com ENOENT se qualquer
  *  diretório pai dentro do vault ainda não existir (ex: dst = vault/usr/share/fonts
  *  mas vault/usr/share ainda não foi criado).
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static int cli_mkdir_p(const char *path, mode_t mode) {
     char tmp[PATH_MAX];
     size_t len = snprintf(tmp, sizeof(tmp), "%s", path);
@@ -528,7 +526,7 @@ static int cli_mkdir_p(const char *path, mode_t mode) {
     return 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  cli_expand_tilde — expande "~" e "~/resto" pro $HOME real
  *
  *  Sem isso, "--blacklist ~/.ssh" chega no bloco de binds como o path
@@ -536,7 +534,7 @@ static int cli_mkdir_p(const char *path, mode_t mode) {
  *  o bind é silenciosamente pulado, e o blacklist nunca é aplicado de fato.
  *  Escreve o resultado em `out` (tamanho `out_sz`). Se não começar com "~",
  *  ou não houver HOME disponível, copia o path original sem modificar.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static void cli_expand_tilde(const char *in, char *out, size_t out_sz) {
     if (in[0] != '~' || (in[1] != '/' && in[1] != '\0')) {
         snprintf(out, out_sz, "%s", in);
@@ -562,12 +560,12 @@ static void cli_expand_tilde(const char *in, char *out, size_t out_sz) {
         snprintf(out, out_sz, "%s%s", home, in + 1); /* "~/foo"  -> "$HOME/foo"  */
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  bind_path_is_safe — impede path traversal para fora do vault_path
  *  Verifica se dst, após resolução, ainda tem vault_path como prefixo.
  *  Como dst pode ainda não existir, sobe no path até achar um componente
  *  já existente para poder chamar realpath().
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static bool bind_path_is_safe(const char *vault_path, const char *dst) {
     char resolved_vault[PATH_MAX];
     if (!realpath(vault_path, resolved_vault)) return false;
@@ -587,9 +585,9 @@ static bool bind_path_is_safe(const char *vault_path, const char *dst) {
            (resolved_probe[vlen] == '/' || resolved_probe[vlen] == '\0');
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Parser principal
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
  // Adiciona temporariamente em vault_cli.c, no início do main ou do parse_flags:
 
 static int parse_flags(int argc, char **argv, CliConfig *cfg) {
@@ -752,7 +750,6 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
         /* gerais */
         case OPT_PASSWORD: cfg->password    = optarg; break;
         case OPT_VERBOSE:  cfg->verbose     = true;   break;
-        case OPT_DEBUG:    cfg->debug       = true;   break;
         case OPT_JSON:     cfg->json_output = true;   break;
         case OPT_VERSION:  cfg->op_version  = true;   break;
         case OPT_HELP:     cfg->op_help     = true;   break;
@@ -869,7 +866,7 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
     return 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  run_isolated() — executa programa dentro do sandbox do vault
  *
  *  Usa os wrappers públicos vsb_* de vault_sandbox.c que expõem as funções
@@ -893,7 +890,7 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
  *    --unshare-uts         → CLONE_NEWUTS + sethostname
  *    --new-session         → setsid()
  *    --no-proc             → não monta /proc
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 #ifdef __linux__
 
 /* resolve_real_uid(): resolve o UID "de verdade" da sessão gráfica do
@@ -962,8 +959,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
     uid_t real_uid = resolve_real_uid();
     gid_t real_gid = resolve_real_gid();
     bool gui_mode = cfg->iso_wayland || cfg->iso_x11;
-
-    vsb_set_debug(cfg->debug);
 
     /* ── Cria jail_root em /tmp (filesystem real, não FUSE) ─────────────────
      *
@@ -1042,9 +1037,9 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
     pid_t pid = fork();
     if (pid < 0) { perror("[RUN] fork"); return -1; }
 
-    /* ════════════════════════════════════════════════════════════════════
+    /*
      *  PROCESSO PAI — escreve uid/gid map e aguarda o filho
-     * ════════════════════════════════════════════════════════════════════ */
+     * */
     if (pid > 0) {
         vault_auth_pid_add_ffi(pid);
 
@@ -1100,9 +1095,9 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         return exit_code;
     }
 
-    /* ════════════════════════════════════════════════════════════════════
+    /*
      *  PROCESSO FILHO — sandbox de 5 camadas + isolamentos extras
-     * ════════════════════════════════════════════════════════════════════ */
+     * */
     close(sync_pipe[1]);
     close(ready_pipe[0]);
     prctl(PR_SET_NAME, "Nuk4sd-Run", 0, 0, 0);
@@ -1198,7 +1193,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         _exit(WIFEXITED(st) ? WEXITSTATUS(st) : 1);
     }
 
-    /* ════════════════ PID 1 dentro do namespace ════════════════════════ */
+    /* ══ PID 1 dentro do namespace ═══ */
 
     /* Torna o mount tree privado para que os bind mounts não vazem */
     if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0)
@@ -1708,7 +1703,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
          * de PNG, causando o erro "image format not recognized" com GResource. */
     }
 
-    /* ═════════════════════════════════════════════════════════════════════
+    /*═
      *  DESKTOP RUNTIME — audio, dbus, gpu, xdg-runtime, dev, display
      * ===================================================================== */
 
@@ -2206,9 +2201,9 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
 
 #endif /* __linux__ */
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Dispatcher principal
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static int dispatch(CliConfig *cfg) {
     int ret = 0;
     uint32_t id = (uint32_t)cfg->vault_id;
@@ -2293,9 +2288,9 @@ static int dispatch(CliConfig *cfg) {
         pass = pass_buf;
     }
 
-    /* ══════════════════════════════════════════════════════════════════════
+    /*══
      *  Despacho por operação
-     * ══════════════════════════════════════════════════════════════════════ */
+     *══ */
 
     if (cfg->op_info)  { cli_log_operation_start("INFO",  id); vault_info_ffi(id);  goto cleanup; }
     if (cfg->op_files) { cli_log_operation_start("FILES", id); vault_files_ffi(id); goto cleanup; }
@@ -2665,9 +2660,9 @@ cleanup:
     return ret;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  Entry point FFI — chamado pelo main.rs
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int vault_cli_parse_and_exec(int argc, char **argv) {
     /* CliConfig tem ~260 KB (binds[64][4096]) — alocada na stack estouraria
      * o limite padrão (8 MB) quando combinada com os frames do Rust runtime
@@ -2703,7 +2698,7 @@ int vault_cli_parse_and_exec(int argc, char **argv) {
     return ret;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  vault_sandbox_run_ffi()
  *
  *  Lança um executável isolado no sandbox de um vault preenchendo o
@@ -2748,7 +2743,6 @@ int vault_sandbox_run_ffi(
     bool        no_fuse,
     bool        seccomp_strict,
     bool        use_chroot,
-    bool        debug,
     const char *const *ro_paths,        uint32_t ro_count,
     const char *const *rw_paths,        uint32_t rw_count,
     const char *const *blacklist_paths, uint32_t blacklist_count
@@ -2775,7 +2769,6 @@ int vault_sandbox_run_ffi(
     cfg->no_fuse        = no_fuse;
     cfg->seccomp_strict = seccomp_strict;
     cfg->iso_use_chroot = use_chroot;
-    cfg->debug          = debug;
 
     for (uint32_t i = 0; i < ro_count && ro_paths; i++)
         bind_add_ffi(cfg, ro_paths[i], BIND_RO);

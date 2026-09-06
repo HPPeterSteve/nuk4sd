@@ -26,7 +26,7 @@
 #include <unistd.h>
 #endif
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  overlay_path_is_safe — verifica que 'path' está contido dentro de
  *  'vault_root', prevenindo ataques de path traversal em upper/work/merged/lower.
  *
@@ -37,7 +37,7 @@
  *    - vault_root ou path NULL → retorna 0 (inseguro) imediatamente.
  *    - path maior que PATH_MAX → retorna 0.
  *    - probe colapsado até "/" sem achar componente existente → retorna 0.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 static int overlay_path_is_safe(const char *vault_root, const char *path) {
     if (!vault_root || !path) return 0;
 
@@ -86,14 +86,14 @@ static int ensure_dir(const char *path) {
     return 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  mount_overlay — monta lower+upper+work em merged.
  *
  *  vault_root: raiz que upper/work/merged/lower DEVEM ter como prefixo
  *  (via overlay_path_is_safe). Passe NULL só se os quatro paths já vierem
  *  de uma fonte confiável e pré-validada — nunca com paths vindos de flag
  *  de usuário ou config carregada de disco.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int mount_overlay(const char *upper, const char *work, const char *lower,
                   const char *merged, const char *vault_root) {
 #ifndef __linux__
@@ -170,12 +170,12 @@ int mount_overlay(const char *upper, const char *work, const char *lower,
 #endif
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  umount_overlay — lazy-unmount (MNT_DETACH) do ponto de montagem merged.
  *
  *  MNT_DETACH garante que o umount não trava se ainda houver fds abertos
  *  dentro do merged (mesmo padrão do teardown FUSE do vault).
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int umount_overlay(const char *merged) {
 #ifndef __linux__
     (void)merged;
@@ -200,7 +200,7 @@ int umount_overlay(const char *merged) {
 #endif
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  overlay_fs_init — entry point de alto nível para VaultContainer.
  *
  *  Checa regras WORM via vault->worm_flags ANTES de qualquer operação de
@@ -212,7 +212,7 @@ int umount_overlay(const char *merged) {
  *    upper  → <path>/upper   (camada de escrita — bloqueada por WORM)
  *    work   → <path>/work
  *    merged → <path>/merged  (ponto de montagem final)
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int overlay_fs_init(const VaultContainer *container, const Vault *vault) {
     if (!container || !vault) {
         vault_log(LOG_ERROR, "[OVERLAY] overlay_fs_init: argumento NULL");

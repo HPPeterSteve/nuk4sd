@@ -138,7 +138,6 @@ pub struct CliConfig {
     pub bind_count: c_int,
 
     pub verbose: bool,
-    pub debug: bool,
     pub json_output: bool,
     pub password: *mut c_char,
 }

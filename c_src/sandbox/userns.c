@@ -15,56 +15,36 @@
 static int sandbox_pivot_root(const char *new_root, bool mount_proc)
 {
     const char *L = "PIVOT";
-    SBX_SEP(L);
     SBX_LOG(L, "\u2501\u2501 Layer 3: PIVOT ROOT \u2192 '%s' \u2501\u2501", new_root);
     if (new_root == NULL || new_root[0] == '\0') {
         SBX_ALERT(L, "new_root is NULL/empty");
         return -1;
     }
-    char cwd_before[512] = "(unknown)";
-    getcwd(cwd_before, sizeof(cwd_before));
-    SBX_DBG(L, "\u25b6 Before: cwd='%s'  pid=%d  euid=%d", cwd_before, (int)getpid(), (int)geteuid());
-    SBX_DBG(L, "  Goal: replace host '/' with vault jail, host fs becomes invisible");
 
     int ret = -1;
     char oldroot[64] = ".sandbox_oldroot_XXXXXX";
-    char fl_buf[256];
 
     /* Step 1: MS_PRIVATE — prevent mount propagation to host */
-    SBX_DBG(L, "\u25b6 Step 1 — mount(none,/,NULL,%s)",
-            decode_mount_flags(MS_REC|MS_PRIVATE, fl_buf, sizeof(fl_buf)));
-    SBX_DBG(L, "  Kernel action: marks entire mount tree as MS_PRIVATE");
-    SBX_DBG(L, "  Effect: new mounts inside namespace won't propagate to host");
-    int r1 = mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);
-    SBX_DBG(L, "  Result: %d %s", r1, r1 ? strerror(errno) : "(OK)");
+    mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);
 
     /* Step 2: self-bind new_root (pivot_root requires a mountpoint) */
-    SBX_DBG(L, "\u25b6 Step 2 — mount('%s','%s',NULL,%s)",
-            new_root, new_root,
-            decode_mount_flags(MS_BIND|MS_REC, fl_buf, sizeof(fl_buf)));
-    SBX_DBG(L, "  Kernel requirement: new_root must be a mountpoint for pivot_root(2)");
     if (mount(new_root, new_root, NULL, MS_BIND | MS_REC, NULL) != 0) {
         int e = errno;
         SBX_ALERT(L, "Self-bind '%s' FAILED: %s (errno=%d)", new_root, strerror(e), e);
         return -1;
     }
-    SBX_DBG(L, "  Result: 0 (OK) — '%s' is now a bind-mounted mountpoint", new_root);
 
     /* Step 3: chdir to new_root */
-    SBX_DBG(L, "\u25b6 Step 3 — chdir('%s')", new_root);
     if (chdir(new_root) != 0) {
         SBX_ALERT(L, "chdir('%s') FAILED: %s", new_root, strerror(errno));
         goto cleanup_bind;
     }
-    SBX_DBG(L, "  Result: 0 (OK) — CWD is now inside future jail root");
 
     /* Step 4: tmp dir for old root anchor */
-    SBX_DBG(L, "\u25b6 Step 4 — mkdtemp('%s') inside new_root (old root anchor)", oldroot);
     if (mkdtemp(oldroot) == NULL) {
         SBX_ALERT(L, "mkdtemp FAILED: %s", strerror(errno));
         goto cleanup_bind;
     }
-    SBX_DBG(L, "  Created: '%s'", oldroot);
     struct stat st;
     if (lstat(oldroot, &st) != 0 || !S_ISDIR(st.st_mode)) {
         SBX_ALERT(L, "TOCTOU check: '%s' is not a real dir!", oldroot);
@@ -73,17 +53,12 @@ static int sandbox_pivot_root(const char *new_root, bool mount_proc)
     }
 
     /* Step 5: THE pivot_root(2) syscall */
-    SBX_DBG(L, "\u25b6 Step 5 — syscall(SYS_pivot_root, '.', '%s')", oldroot);
-    SBX_DBG(L, "  Kernel action: new_root='%s' becomes '/'  |  old '/' → '%s'",
-            new_root, oldroot);
-    SBX_DBG(L, "  Security: stronger than chroot (no path traversal via openat AT_FDCWD)");
     if (syscall(SYS_pivot_root, ".", oldroot) != 0) {
         int e = errno;
         SBX_ALERT(L, "pivot_root FAILED: %s (errno=%d) — try --chroot as fallback", strerror(e), e);
         rmdir(oldroot);
         goto cleanup_bind;
     }
-    SBX_DBG(L, "  Result: 0 (OK) — ROOT FS REPLACED. Host filesystem is now at '/%s'", oldroot);
 
     /* Step 6: detach old root */
     char oldroot_abs[80];
@@ -96,15 +71,10 @@ static int sandbox_pivot_root(const char *new_root, bool mount_proc)
         mkdir("/proc", 0555);
         if (mount("proc", "/proc", "proc", MS_NOSUID|MS_NOEXEC|MS_NODEV, NULL) != 0) {
             SBX_ALERT(L, "mount /proc falhou ANTES do detach: %s", strerror(errno));
-        } else {
-            SBX_DBG(L, "/proc fresco montado COM SUCESSO antes do detach");
         }
     }
 
-    SBX_DBG(L, "\u25b6 Step 6 \u2014 umount2('%s', MNT_DETACH)", oldroot_abs);
-    int ru = umount2(oldroot_abs, MNT_DETACH);
-    SBX_DBG(L, "  Result: %d — host fs is now %s", ru,
-            ru ? "POSSIBLY VISIBLE (non-fatal)" : "FULLY DETACHED AND INVISIBLE");
+    umount2(oldroot_abs, MNT_DETACH);
     rmdir(oldroot_abs);
 
     if (chdir("/") != 0) {
@@ -112,7 +82,6 @@ static int sandbox_pivot_root(const char *new_root, bool mount_proc)
         goto cleanup_bind;
     }
     SBX_OK(L, "Root pivoted. Jail '/' = vault. Host filesystem: DETACHED.");
-    SBX_SEP(L);
     ret = 0;
     goto done;
 

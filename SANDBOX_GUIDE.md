@@ -29,20 +29,6 @@ A implementação de Seccomp foi fortificada para bloquear explorações comuns,
 Nuk4sd --vault 1 --run secret_app --seccomp-strict --allow-clone3 
 ```
 
-## 3. Modo de Depuração Avançado (Debug)
-
-Se o programa quebrar por falta de privilégios ou se você desejar auditar como o Sandbox isolou o processo, use o modo debug. Os logs do kernel não são simulados; eles refletem ativamente `prctl`, mudanças de capability, estados do mount propagation e rlimits!
-
-```bash
-Nuk4sd --vault 1 --run firefox --debug
-```
-
-*O que o `--debug` revela:*
-*   A transição de capabilities (CAP_DROP).
-*   Detalhes do `pivot_root` (mounts, propagation flags como MS_PRIVATE).
-*   Os Rlimits sendo injetados (arquivos abertos, limite de CPU).
-*   Configurações Seccomp aplicadas.
-
 ## 4. Usando Perfis Prontos (Profiles)
 
 Ao invés de passar longos comandos na CLI toda vez que quiser rodar um programa, você pode criar perfis prontos `.conf`.
@@ -95,6 +81,5 @@ Nuk4sd --vault 3 \
   --no-net \
   --seccomp-strict \
   --allow-clone3 \
-  --debug \
   -- secret_document.pdf
 ```

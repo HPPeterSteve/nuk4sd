@@ -213,9 +213,9 @@ static FileBucket *create_file_bucket(Vault *v, const char *path)
     return fb;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
   *  SECTION 8: FILE INTEGRITY MONITOR
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 
 /* Enforces read-only permissions (0400) on all files in the vault */
 void vault_enforce_readonly(Vault *v)
@@ -342,9 +342,9 @@ void monitor_scan_vault(Vault *v)
     v->last_check = time(NULL);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
   *  SECTION 9: ALERT SYSTEM
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 
 void alert_trigger(Vault *v, const char *reason)
 {
@@ -441,9 +441,9 @@ VaultErrorr alert_resolve(uint32_t id, const char *password)
         return catalog_save();
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
   *  SECTION 10: RULE ENGINE
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 
 void rule_add(uint32_t vault_id, int max_fails, int hour_from, int hour_to)
 {

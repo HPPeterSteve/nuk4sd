@@ -284,7 +284,7 @@ texto de ajuda: `--rw-home`, `--audio`, `--gpu`, `--xdg-runtime`, `--dbus`,
 `--dev`, `--display`, `--wayland-display`, `--chroot`, `--pivot-root`,
 `--no-seccomp`, `--seccomp-strict`, `--allow-clone3`, `--friendly-sandbox`,
 `--permissive`, `--max-procs`, `--max-mem`, `--max-filesize`, `--max-fds`,
-`--tmp-size`, `--no-fuse`, `--preset`, `--debug`, `--health`. Todas
+`--tmp-size`, `--no-fuse`, `--preset`, `--health`. Todas
 adicionadas ao `print_help()` com descrição extraída do código real (não
 suposição).
 

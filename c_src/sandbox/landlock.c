@@ -111,7 +111,7 @@ static int ll_allow_path(int ruleset_fd, const char *path, __u64 allowed)
     return ret;
 }
 
-/* ════════════════════════════════════════════════════════════════════════
+/*════
  *  landlock_apply — entry point principal
  *
  *  Constrói o ruleset com base nos bind mounts declarados no CliConfig:
@@ -127,7 +127,7 @@ static int ll_allow_path(int ruleset_fd, const char *path, __u64 allowed)
  *
  *  Retorna 0 em sucesso, -1 se Landlock não suportado (kernel antigo).
  *  Fallback silencioso: sandbox continua sem Landlock — Seccomp permanece.
- * ════════════════════════════════════════════════════════════════════════ */
+ *════ */
 int landlock_apply(const CliConfig *cfg, const char *vault_root)
 {
     if (!cfg) return -1;

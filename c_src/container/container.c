@@ -15,7 +15,7 @@
 #include "container.h"
 #include "vault_core.h"
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  container_whitelist_exclude — exclui a whitelist de um container selado.
  *
  *  Após esta chamada, operações normalmente permitidas pela whitelist padrão
@@ -26,7 +26,7 @@
  *
  *  @param c  Container alvo. Não pode ser NULL.
  *  Retorna 0 em sucesso, -1 se c for NULL.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int container_whitelist_exclude(VaultContainer *c) {
     if (!c) {
         vault_log(LOG_ERROR, "[CONTAINER] container_whitelist_exclude: argumento NULL");
@@ -40,7 +40,7 @@ int container_whitelist_exclude(VaultContainer *c) {
     return 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  container_whitelist_restore — restaura a whitelist padrão.
  *
  *  Reverte o efeito de container_whitelist_exclude(). Operações na whitelist
@@ -50,7 +50,7 @@ int container_whitelist_exclude(VaultContainer *c) {
  *
  *  @param c  Container alvo. Não pode ser NULL.
  *  Retorna 0 em sucesso, -1 se c for NULL.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int container_whitelist_restore(VaultContainer *c) {
     if (!c) {
         vault_log(LOG_ERROR, "[CONTAINER] container_whitelist_restore: argumento NULL");
@@ -63,13 +63,13 @@ int container_whitelist_restore(VaultContainer *c) {
     return 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  container_is_operable — verifica se o container permite a operação
  *  solicitada considerando estado sealed + whitelist.
  *
  *  Retorna 1 se a operação é permitida, 0 se bloqueada.
  *  Não loga — deixa o chamador logar com o contexto correto.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int container_is_operable(const VaultContainer *c) {
     if (!c) return 0;
     /* Selado + whitelist excluída → nenhuma operação permitida */

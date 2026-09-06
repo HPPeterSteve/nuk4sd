@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  mount_overlay — entry point genérico (baixo nível).
  *
  *  Monta lower+upper+work em merged como overlayfs.
@@ -26,21 +26,21 @@ extern "C" {
  *  de uma fonte confiável e pré-validada — nunca com input de usuário.
  *
  *  Retorna 0 em sucesso, -1 em erro.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int mount_overlay(const char *upper, const char *work, const char *lower,
                   const char *merged, const char *vault_root);
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  umount_overlay — lazy-unmount (MNT_DETACH) do ponto de montagem merged.
  *
  *  MNT_DETACH garante que o umount não trava se ainda houver fds abertos
  *  dentro do merged (mesmo padrão do teardown FUSE do vault).
  *
  *  Retorna 0 em sucesso, -1 em erro.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int umount_overlay(const char *merged);
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/*
  *  overlay_fs_init — entry point de alto nível para containers.
  *
  *  Deriva os paths lower/upper/work/merged de container->path,
@@ -59,7 +59,7 @@ int umount_overlay(const char *merged);
  *  @param container  Não pode ser NULL — fornece path base do container.
  *  @param vault      Não pode ser NULL — usado para checar worm_flags.
  *  Retorna 0 em sucesso, -1 em erro.
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * */
 int overlay_fs_init(const VaultContainer *container, const Vault *vault);
 
 #ifdef __cplusplus

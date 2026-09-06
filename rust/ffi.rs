@@ -212,9 +212,7 @@ extern "C" {
         audio: bool,
         ro_home: bool,
         no_fuse: bool,
-        seccomp_strict: bool,
         use_chroot: bool,
-        debug: bool,
         image_path: *const c_char,
 
         ro_paths: *const *const c_char,
@@ -421,7 +419,6 @@ pub struct SandboxOptions {
     pub no_fuse: bool,
     pub seccomp_strict: bool,
     pub use_chroot: bool,
-    pub debug: bool,
     pub image: Option<String>,
 }
 
@@ -480,7 +477,6 @@ pub fn run_sandbox(
             opts.no_fuse,
             opts.seccomp_strict,
             opts.use_chroot,
-            opts.debug,
             image_ptr,
             ro_ptrs.as_ptr(),
             ro_ptrs.len() as u32,

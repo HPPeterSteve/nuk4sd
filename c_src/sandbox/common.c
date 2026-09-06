@@ -9,10 +9,6 @@
 
 #ifdef __linux__
 
-bool g_sandbox_debug = false;
 
-void vsb_set_debug(bool debug) {
-    g_sandbox_debug = debug;
-}
 
 #endif /* __linux__ */

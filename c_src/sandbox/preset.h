@@ -146,7 +146,6 @@ typedef struct {
 
     /* Gerais */
     bool  verbose;
-    bool  debug;                 /* --debug */
     bool  json_output;
     char *password;
 } CliConfig;
