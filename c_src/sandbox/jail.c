@@ -418,9 +418,9 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
             /* Create parent if needed for nested dirs like etc/fonts */
             char parent[VAULT_PATH_MAX];
             snprintf(parent, sizeof(parent), "%s", dir);
-            char *p = strrchr(parent, '/');
-            if (p) { 
-                *p = '\0'; mkdir(parent, 0755); 
+            char *last_dir = strrchr(parent, '/');
+            if (last_dir) { 
+                *last_dir = '\0'; mkdir(parent, 0755); 
             }
             if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
                 vault_log(LOG_WARN, "[SANDBOX] mkdir %s: %s", dir, strerror(errno));
