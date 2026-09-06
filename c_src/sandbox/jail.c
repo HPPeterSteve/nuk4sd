@@ -243,13 +243,9 @@ static int jail_install_shell(const char *vault_path)
         }
 
         if (!is_static) {
-            vault_log(LOG_WARN,
-                      "[SANDBOX] '%s' appears to be dynamically linked — "
-                      "may fail inside jail (missing host /lib). "
-                      "Install 'busybox-static' for reliable operation.",
-                      candidates[i]);
-            printf("[SANDBOX] [WARN] Copied '%s' but it may be dynamic — "
-                   "prefer busybox-static.\n", candidates[i]);
+            unlink(dst);
+            vault_log(LOG_WARN, "[SANDBOX] Shell candidate '%s' is dynamically linked — skipping for static shell", candidates[i]);
+            continue;
         }
 
         vault_log(LOG_INFO,
