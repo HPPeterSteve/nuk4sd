@@ -288,17 +288,14 @@ static int jail_install_shell(const char *vault_path)
             if (!ok) { unlink(dst); continue; }
 
             vault_log(LOG_AUDIT,
-                      "[SANDBOX] ✔ Shell auto-installed and deployed: '%s' → jail/bin/sh (%ld bytes)",
+                      "[SANDBOX] Shell auto-installed and deployed: '%s' → jail/bin/sh (%ld bytes)",
                       candidates[i], (long)st.st_size);
             return 0;
         }
     }
 
-    /* ── Tentativa 3: desiste ────────────────────────────────────────── */
-    vault_log(LOG_WARN,
-              "[SANDBOX] Could not obtain a shell binary for the jail. "
-              "Sandbox will open but execl(\"/bin/sh\") will fail. "
-              "Install busybox-static manually: apt install busybox-static");
+    vault_log(LOG_WARN, "[SANDBOX] Shell binary not found for jail.");
+    errno = ENOENT;
     return -1;
 }
 
