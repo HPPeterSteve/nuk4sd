@@ -80,8 +80,6 @@ int vsb_setup_veth_host(pid_t child_pid, const char *jail_ip, const char *gw_ip,
     snprintf(if0, sizeof(if0), "%s0", name_prefix);
     snprintf(if1, sizeof(if1), "%s1", name_prefix);
 
-    printf("[SANDBOX] [Layer 2/5] Setting up isolated veth pair (%s): ", name_prefix);
-
     /* Remove par veth anterior se existir — idempotência via ip link del. */
     net_exec("ip link del %s0 2>/dev/null", name_prefix);
 
@@ -89,7 +87,7 @@ int vsb_setup_veth_host(pid_t child_pid, const char *jail_ip, const char *gw_ip,
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "ip link add %s type veth peer name %s", if0, if1);
     if (system(cmd) != 0) {
-        fprintf(stderr, "\n[NET][ERROR] Failed to create veth pair: %s\n", strerror(errno));
+        vault_log(LOG_ERROR, "[NET] Failed to create veth pair: %s", strerror(errno));
         return -1;
     }
 
@@ -101,7 +99,7 @@ int vsb_setup_veth_host(pid_t child_pid, const char *jail_ip, const char *gw_ip,
     /* Move veth1 para o network namespace do filho. */
     snprintf(cmd, sizeof(cmd), "ip link set %s netns %d", if1, (int)child_pid);
     if (system(cmd) != 0) {
-        fprintf(stderr, "[NET][ERROR] Failed to move %s to pid %d netns: %s\n", if1, (int)child_pid, strerror(errno));
+        vault_log(LOG_ERROR, "[NET] Failed to move %s to pid %d netns: %s", if1, (int)child_pid, strerror(errno));
         return -1;
     }
 
@@ -115,7 +113,7 @@ int vsb_setup_veth_host(pid_t child_pid, const char *jail_ip, const char *gw_ip,
              gw_ip, name_prefix, gw_ip, name_prefix);
     system(cmd);
 
-    printf("OK (gw=%s, jail=%s, NAT active)\n", gw_ip, jail_ip);
+    vault_log(LOG_INFO, "[NET] Isolated veth pair '%s' setup: gw=%s, jail=%s, NAT active", name_prefix, gw_ip, jail_ip);
     return 0;
 }
 
@@ -128,8 +126,6 @@ int vsb_configure_veth_inside(const char *jail_ip, const char *gw_ip, const char
     char if1[NET_IFACE_NAME_MAX];
     snprintf(if1, sizeof(if1), "%s1", name_prefix);
 
-    printf("[SANDBOX] [Layer 2/5] Configuring veth inside jail namespace: ");
-
     /* Ativar interface */
     net_exec("ip link set %s up", if1);
 
@@ -137,21 +133,21 @@ int vsb_configure_veth_inside(const char *jail_ip, const char *gw_ip, const char
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "ip addr add %s/24 dev %s", jail_ip, if1);
     if (system(cmd) != 0) {
-        fprintf(stderr, "\n[NET][ERROR] Failed to assign IP %s to %s\n", jail_ip, if1);
+        vault_log(LOG_ERROR, "[NET] Failed to assign IP %s to %s", jail_ip, if1);
         return -1;
     }
 
     /* Rota default via gateway */
     snprintf(cmd, sizeof(cmd), "ip route add default via %s dev %s", gw_ip, if1);
     if (system(cmd) != 0) {
-        fprintf(stderr, "\n[NET][ERROR] Failed to add default route via %s\n", gw_ip);
+        vault_log(LOG_ERROR, "[NET] Failed to add default route via %s", gw_ip);
         return -1;
     }
 
     /* Loopback */
     net_exec("ip link set lo up");
 
-    printf("OK (%s via %s)\n", jail_ip, gw_ip);
+    vault_log(LOG_INFO, "[NET] Configured veth inside jail namespace: %s via %s", jail_ip, gw_ip);
     return 0;
 }
 
@@ -169,8 +165,7 @@ int user_send_set_ip(const char *set_name, const char *ip) {
     nf.allowed_ips[nf.count][IP_MAX_LEN - 1] = '\0';
     nf.count++;
 
-    printf("[nfilter] IP to allow: %s\n", nf.allowed_ips[nf.count - 1]);
-    vault_log(LOG_INFO, "[NET] [Layer 2/5] Adding IP to set %s: %s", set_name, nf.allowed_ips[nf.count - 1]);
+    vault_log(LOG_INFO, "[NET] Adding IP to set %s: %s", set_name, nf.allowed_ips[nf.count - 1]);
 
     return 0;
 }

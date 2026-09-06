@@ -113,12 +113,6 @@ static int jail_run_installer(void)
                   "[SANDBOX] Detected package manager '%s' — invoking to install busybox-static...",
                   pm_paths[i]);
 
-        printf("[SANDBOX] [AUTO-INSTALL] Running: %s", pm_paths[i]);
-        for (int j = 1; installers[i][j]; j++)
-            printf(" %s", installers[i][j]);
-        printf("\n");
-        fflush(stdout);
-
         pid_t pid = fork();
         if (pid < 0) {
             vault_log(LOG_WARN, "[SANDBOX] fork for installer failed: %s", strerror(errno));
@@ -259,22 +253,15 @@ static int jail_install_shell(const char *vault_path)
         }
 
         vault_log(LOG_INFO,
-                  "[SANDBOX] ✔ Shell installed: '%s' → jail/bin/sh (%ld bytes, %s)",
+                  "[SANDBOX] Shell installed: '%s' → jail/bin/sh (%ld bytes, %s)",
                   candidates[i], (long)st.st_size,
                   is_static ? "static" : "dynamic — may fail");
-        printf("[SANDBOX] [AUTO-INSTALL] ✔ Shell ready at jail/bin/sh "
-               "(copied from '%s', %s).\n",
-               candidates[i],
-               is_static ? "statically linked" : "dynamically linked — may fail inside jail");
         return 0;
     }
 
-    /* ── Tentativa 2: instala via package manager e tenta de novo ────── */
-    printf("[SANDBOX] [AUTO-INSTALL] busybox not found on host — attempting automatic installation...\n");
     vault_log(LOG_WARN, "[SANDBOX] No busybox found on host — attempting auto-install via package manager.");
 
     if (geteuid() != 0) {
-        printf("[SANDBOX] [AUTO-INSTALL] WARNING: not running as root — package manager will likely fail.\n");
         vault_log(LOG_WARN, "[SANDBOX] Auto-install requires root privileges (euid=%d).", geteuid());
     }
 
@@ -307,7 +294,6 @@ static int jail_install_shell(const char *vault_path)
             vault_log(LOG_AUDIT,
                       "[SANDBOX] ✔ Shell auto-installed and deployed: '%s' → jail/bin/sh (%ld bytes)",
                       candidates[i], (long)st.st_size);
-            printf("[SANDBOX] [AUTO-INSTALL] ✔ busybox-static installed and deployed to jail/bin/sh.\n");
             return 0;
         }
     }
@@ -317,9 +303,6 @@ static int jail_install_shell(const char *vault_path)
               "[SANDBOX] Could not obtain a shell binary for the jail. "
               "Sandbox will open but execl(\"/bin/sh\") will fail. "
               "Install busybox-static manually: apt install busybox-static");
-    printf("[SANDBOX] [AUTO-INSTALL] ✗ Could not install shell. "
-           "Run: sudo apt install busybox-static\n");
-    printf("Bye.\n");
     return -1;
 }
 
@@ -796,74 +779,48 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     }
 
     /* [Layer 3] Pivot Root */
-    printf("[SANDBOX] [Layer 3/5] Executing pivot_root syscall targeting '%s'...\n", v->path);
     if (vsb_pivot_root(v->path, true) != 0)
     {
         int err = errno;
         fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: pivot_root('%s') | Error: %s (%d)\n", __func__, v->path, strerror(err), err);
         _exit(-ERR_SYSTEM_PIVOT_ROOT_FAILED);
     }
-    printf("[SANDBOX] [Layer 3/5] Root filesystem successfully pivoted. Old root unmounted.\n");
-
-    printf("[SANDBOX] [Layer 3/5] Creating private virtual mounts (/proc, /tmp) inside new root...\n");
-    vsb_prepare_mounts();
-    printf("[SANDBOX] [Layer 3/5] /proc and /tmp (tmpfs) mounted securely with MS_NOSUID | MS_NOEXEC.\n");
+   vsb_prepare_mounts();
 
     /* [Layer 4] Drop capabilities */
-    printf("[SANDBOX] [Layer 4/5] Dropping Linux kernel capabilities to prevent privilege escalation...\n");
-    if (vsb_drop_caps() != 0)
+   if (vsb_drop_caps() != 0)
     {
         int err = errno;
         fprintf(stderr, "[SANDBOX][FATAL] drop capabilities failed: %s (Kernel code %d)\n", strerror(err), err);
         _exit(1);
     }
-    printf("[SANDBOX] [Layer 4/5] Capabilities dropped. PR_SET_NO_NEW_PRIVS set to 1.\n");
-
-    printf("[SANDBOX] [Layer 4/5] Enforcing resource limits (GUI Mode=%s)...\n", gui_mode ? "TRUE" : "FALSE");
     vsb_limit_resources(gui_mode);
-    printf("[SANDBOX] [Layer 4/5] Kernel RLIMIT parameters applied successfully.\n");
 
     /* [Layer 5] Seccomp-BPF — LAST STEP */
-    printf("[SANDBOX] [Layer 5/5] Compiling and loading Seccomp-BPF filter allowlist...\n");
     if (vsb_apply_seccomp() != 0)
     {
         int err = errno;
         fprintf(stderr, "[SANDBOX][FATAL] seccomp policy activation failed: %s (Kernel code %d)\n", strerror(err), err);
         _exit(1);
     }
-    printf("[SANDBOX] [Layer 5/5] Seccomp filter loaded. Kernel will now SIGKILL unauthorized syscalls.\n");
-
-    printf("\n");
-    printf("  ┌─────────────────────────────────────────────────────────┐\n");
-    printf("  │     Nuk4sd HARDENED SANDBOX v2                          │\n");
-    printf("  │     Vault : %-43s               │\n", v->name);
-    printf("  │     Isolation: UserNS + PivotRoot + Caps + Seccomp-BPF  │\n");
-    printf("  │     Mode: Least Privilege · Deny by Default             │\n");
-    printf("  │     Type 'exit' to end session.                         │\n");
-    printf("  └─────────────────────────────────────────────────────────┘\n\n");
 
 
     if (gui_mode && app_cmd && app_cmd[0] != '\0') {
-        printf("[SANDBOX] Launching GUI App: %s\n", app_cmd);
+        vault_log(LOG_INFO, "[SANDBOX] Launching GUI App: %s", app_cmd);
         
         /* Parse simple args. In a real shell, we'd use wordexp or /bin/sh -c */
         /* For now, just pass to /bin/sh -c so it inherits the PATH from /usr/bin */
         execl("/bin/sh", "sh", "-c", app_cmd, NULL);
         
         int err = errno;
-        fprintf(stderr,
-                "[SANDBOX][FATAL] execl(/bin/sh -c %s) failed: %s (Kernel code %d)\n",
-                app_cmd, strerror(err), err);
+        vault_log(LOG_ERROR, "[SANDBOX] execl(/bin/sh -c %s) failed: %s (%d)", app_cmd, strerror(err), err);
         _exit(127);
     } else {
-        printf("[SANDBOX] Launching shell via execl(\"/bin/sh\")...\n%s\n", app_cmd);
+        vault_log(LOG_INFO, "[SANDBOX] Launching shell via execl(\"/bin/sh\")");
         execl("/bin/sh", "sh", NULL);
 
         int err = errno;
-        fprintf(stderr,
-                "[SANDBOX][FATAL] execl(/bin/sh) failed: %s (Kernel code %d)\n"
-                "  Hint: place a static /bin/sh (busybox) inside the vault.\n",
-                strerror(err), err);
+        vault_log(LOG_ERROR, "[SANDBOX] execl(/bin/sh) failed: %s (%d)", strerror(err), err);
         _exit(127);
     }
 }
