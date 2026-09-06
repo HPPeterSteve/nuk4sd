@@ -129,7 +129,7 @@ enum {
     OPT_HOSTNAME, OPT_PROFILE,
     /* desktop runtime */
     OPT_AUDIO, OPT_DBUS, OPT_GPU, OPT_XDG_RUNTIME,
-    OPT_DEV, OPT_NO_SECCOMP, OPT_CHROOT,OPT_PIVOT_ROOT,
+    OPT_DEV, OPT_MOUNT_DEV, OPT_NO_SECCOMP, OPT_CHROOT, OPT_PIVOT_ROOT,
     OPT_DISPLAY_OPT, OPT_WAYLAND_DISPLAY,
     OPT_PRESET,
     /* limites de recurso */
@@ -213,6 +213,7 @@ static const struct option long_options[] = {
     { "gpu",             no_argument,       NULL, OPT_GPU },
     { "xdg-runtime",     no_argument,       NULL, OPT_XDG_RUNTIME },
     { "dev",             required_argument, NULL, OPT_DEV },
+    { "mount-dev",       no_argument,       NULL, OPT_MOUNT_DEV },
     { "no-seccomp",      no_argument,       NULL, OPT_NO_SECCOMP },
     { "pivot-root",      no_argument,       NULL, OPT_PIVOT_ROOT },
     { "chroot",          no_argument,       NULL, OPT_CHROOT },
@@ -712,6 +713,9 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
             if      (!strcmp(optarg, "minimal")  || !strcmp(optarg, "1")) cfg->iso_dev_level = 1;
             else if (!strcmp(optarg, "standard") || !strcmp(optarg, "2")) cfg->iso_dev_level = 2;
             else { print_err("--dev: use 'minimal', 'standard', '1' or '2'"); return -1; }
+            break;
+        case OPT_MOUNT_DEV:
+            cfg->iso_mount_dev = true;
             break;
         /* limites de recurso — parse_int_arg() valida range e
          * detecta overflow; atoi() retornava 0 silenciosamente
@@ -2129,6 +2133,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         int friendly = cfg->friendly_sandbox || (gui_mode && !cfg->seccomp_strict);
         vsb_set_seccomp_mode(cfg->seccomp_strict ? 1 : 0, cfg->allow_clone3 ? 1 : 0,
                              friendly ? 1 : 0, permissive ? 1 : 0);
+        vsb_set_mount_dev(cfg->iso_mount_dev);
         if (permissive) {
             vault_log(LOG_AUDIT,
                       "[SECURITY] Modo amigável GUI ATIVO │ exec='%s' │ vault_id=%d │ pid=%d │ "

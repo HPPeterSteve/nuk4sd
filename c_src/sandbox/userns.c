@@ -98,47 +98,6 @@ done:
     return ret;
 }
 
-enum mount_readonly {
-    MOUNT_READONLY,
-    MOUNT_READWRITE,
-};
-
-struct mount_entry {
-    const char *source;
-    const char *target;
-    enum mount_readonly readonly;
-};
-
-static const struct mount_entry static_mounts[] = {
-    {
-        .source   = "/dev/pts",
-        .target   = "/dev/pts",
-        .readonly = MOUNT_READONLY,
-    },
-    {
-        .source   = "/dev",
-        .target   = "/dev",
-        .readonly = MOUNT_READWRITE,
-    },
-    {
-        .source   = "/sys",
-        .target   = "/sys",
-        .readonly = MOUNT_READONLY,
-    },
-    {
-        .source   = NULL  // marca o fim da tabela estática
-    }
-};
-
-static void mountdev() {
-    const char *const devpts =
-    "/dev/pts:/dev/pts:nosuid,noexec,nodev";
-
-    const char *const dev =
-    "/dev:/dev:bind,nosuid";
-
-
-}
 
 static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
 {
@@ -210,8 +169,6 @@ static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
         vault_log(LOG_ALERT, "[USERNS] uid_map/gid_map write failed — aborting namespace setup");
         return -1;
     }
-    return 0;
-}
     return 0;
 }
 

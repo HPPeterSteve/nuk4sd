@@ -100,6 +100,7 @@ typedef struct {
     bool       iso_gpu;          /* --gpu: /dev/dri                 */
     bool       iso_xdg_runtime;  /* --xdg-runtime: /run/user/$UID  */
     int        iso_dev_level;    /* --dev minimal(1)/standard(2)   */
+    bool       iso_mount_dev;    /* --mount-dev: bind /dev /dev/pts /sys */
     bool       iso_no_seccomp;   /* --no-seccomp: debug/sem BPF    */
     bool       iso_use_chroot;   /* --chroot: usa chroot em vez de pivot_root */
     char      *iso_display;      /* --display :N                   */

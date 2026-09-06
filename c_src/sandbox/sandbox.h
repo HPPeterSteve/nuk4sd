@@ -55,6 +55,26 @@ int vsb_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid);
 void vsb_prepare_mounts(void);
 
 /*═══
+ *  mount_dev.c — bind-mounts de dispositivos (/dev, /dev/pts, /sys)
+ *═══ */
+
+/** Política de acesso de um bind-mount. */
+typedef enum mount_readonly {
+    MOUNT_READONLY,   /**< MS_RDONLY — mount somente-leitura */
+    MOUNT_READWRITE,  /**< sem MS_RDONLY — leitura + escrita  */
+} mount_readonly_t;
+
+/** Entrada na tabela estática de mounts (sentinela: source == NULL). */
+typedef struct mount_entry {
+    const char      *source;    /**< path no host  */
+    const char      *target;    /**< path no jail  */
+    mount_readonly_t readonly;  /**< política R/W  */
+} mount_entry_t;
+
+void vsb_mount_dev(void);
+void vsb_set_mount_dev(bool enabled);
+
+/*═══
  *  rlimits.c — Resource Limits
  *═══ */
 void vsb_limit_resources(bool is_gui);

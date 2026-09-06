@@ -780,6 +780,8 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
         fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: pivot_root('%s') | Error: %s (%d)\n", __func__, v->path, strerror(err), err);
         _exit(-ERR_SYSTEM_PIVOT_ROOT_FAILED);
     }
+    /* /dev sintético — isola do host imediatamente após o pivot */
+    vsb_mount_dev();
    vsb_prepare_mounts();
 
     /* [Layer 4] Drop capabilities */
