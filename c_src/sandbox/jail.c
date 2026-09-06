@@ -2,7 +2,7 @@
  * jail.c
  *
  * Nuk4sd — Hardened Sandbox — Estrutura do jail (dirs, /dev, shell, GUI binds)
- * Extraído de vault_sandbox.c (split modular, estilo Firejail).
+ * Extraído de vault_sandbox.c 
  *
  * Chama vsb_limit_resources() (rlimits.c) durante a preparação do jail.
  */
@@ -420,7 +420,9 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
             snprintf(parent, sizeof(parent), "%s", dir);
             char *last_dir = strrchr(parent, '/');
             if (last_dir) { 
-                *last_dir = '\0'; mkdir(parent, 0755); 
+                /* retira o ultimo diretorio para poder criar o pai dele mesmo (como no caso do etc/fonts) */
+                *last_dir = '\0'; 
+                mkdir(parent, 0755); 
             }
             if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
                 vault_log(LOG_WARN, "[SANDBOX] mkdir %s: %s", dir, strerror(errno));

@@ -2,7 +2,7 @@
  * mounts.c
  *
  * Nuk4sd — Hardened Sandbox — Layer 2: Mount Namespace (/proc, /tmp)
- * Extraído de vault_sandbox.c (split modular, estilo Firejail).
+ * Extraído de vault_sandbox.c 
  */
 
 #include "sandbox.h"

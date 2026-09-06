@@ -2,7 +2,7 @@
  * rlimits.c
  *
  * Nuk4sd — Hardened Sandbox — Resource Limits (DoS prevention)
- * Extraído de vault_sandbox.c (split modular, estilo Firejail).
+ * Extraído de vault_sandbox.c 
  */
 
 #include "sandbox.h"

@@ -2,7 +2,7 @@
  * caps.c
  *
  * Nuk4sd — Hardened Sandbox — Layer 4: Capability Drop
- * Extraído de vault_sandbox.c (split modular, estilo Firejail).
+ * Extraído de vault_sandbox.c 
  */
 
 #include "sandbox.h"

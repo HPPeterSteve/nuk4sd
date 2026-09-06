@@ -2588,7 +2588,7 @@ static int dispatch(CliConfig *cfg) {
                     goto cleanup;
                 }
                 if (cfg->verbose)
-                    printf("  → --no-fuse: usando jail root em '%s' (sem FUSE)\n", vault_path);
+                    printf("  --no-fuse: usando jail root em '%s' (sem FUSE)\n", vault_path);
             }
         } else {
             if (vault_get_real_path_ffi(id, vault_path, sizeof(vault_path)) != 0) {

@@ -2,16 +2,18 @@
  * userns.c
  *
  * Nuk4sd — Hardened Sandbox — Layer 1+3: User Namespace + Pivot Root
- * Extraído de vault_sandbox.c (split modular, estilo Firejail).
+ * Extraído de vault_sandbox.c 
  */
 
 #include "sandbox.h"
 
 #ifdef __linux__
 
-/* ─────────────────────────────────────────────────────────────────────────
- *  sandbox_pivot_root(): Layer 3 — Pivot root to vault path
- * ───────────── */
+static inline void pivot_fatal(const char *step) {
+    vault_log(LOG_ALERT, "[PIVOT] Critical failure during '%s' — aborting to prevent escape", step);
+    _exit(EXIT_FAILURE);
+}
+
 static int sandbox_pivot_root(const char *new_root, bool mount_proc)
 {
     if (new_root == NULL || new_root[0] == '\0') {
@@ -66,13 +68,27 @@ static int sandbox_pivot_root(const char *new_root, bool mount_proc)
         }
     }
 
-    umount2(oldroot_abs, MNT_DETACH);
-    rmdir(oldroot_abs);
+    if (umount2(oldroot_abs, MNT_DETACH) != 0) {
+        vault_log(LOG_ERROR,
+              "[PIVOT] umount2('%s') failed: %s",
+              oldroot_abs, strerror(errno));
+        pivot_fatal("oldroot detach");
+    }
+
+    if (rmdir(oldroot_abs) != 0) {
+        vault_log(LOG_ERROR,
+                  "[PIVOT] rmdir('%s') failed: %s",
+                  oldroot_abs, strerror(errno));
+        pivot_fatal("oldroot removal");
+    }
 
     if (chdir("/") != 0) {
-        vault_log(LOG_ERROR, "[PIVOT] chdir('/') after pivot failed: %s", strerror(errno));
-        goto cleanup_bind;
+        vault_log(LOG_ALERT,
+                  "[PIVOT] chdir('/') failed: %s",
+                  strerror(errno));
+        pivot_fatal("return to root");
     }
+
     ret = 0;
     goto done;
 
@@ -80,6 +96,48 @@ cleanup_bind:
     umount2(new_root, MNT_DETACH);
 done:
     return ret;
+}
+
+enum mount_readonly {
+    MOUNT_READONLY,
+    MOUNT_READWRITE,
+};
+
+struct mount_entry {
+    const char *source;
+    const char *target;
+    enum mount_readonly readonly;
+};
+
+static const struct mount_entry static_mounts[] = {
+    {
+        .source   = "/dev/pts",
+        .target   = "/dev/pts",
+        .readonly = MOUNT_READONLY,
+    },
+    {
+        .source   = "/dev",
+        .target   = "/dev",
+        .readonly = MOUNT_READWRITE,
+    },
+    {
+        .source   = "/sys",
+        .target   = "/sys",
+        .readonly = MOUNT_READONLY,
+    },
+    {
+        .source   = NULL  // marca o fim da tabela estática
+    }
+};
+
+static void mountdev() {
+    const char *const devpts =
+    "/dev/pts:/dev/pts:nosuid,noexec,nodev";
+
+    const char *const dev =
+    "/dev:/dev:bind,nosuid";
+
+
 }
 
 static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)

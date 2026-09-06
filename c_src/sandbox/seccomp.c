@@ -2,7 +2,7 @@
  * seccomp.c
  *
  * Nuk4sd — Hardened Sandbox — Layer 5: Seccomp-BPF
- * Extraído de vault_sandbox.c (split modular, estilo Firejail).
+ * Extraído de vault_sandbox.c 
  */
 
 #include "sandbox.h"
