@@ -30,14 +30,7 @@
 #include <sys/sysmacros.h>
 #endif
 
-#define SBX_LOG(layer, fmt, ...) \
-    fprintf(stderr, "\033[36m[SANDBOX][%s]\033[0m " fmt "\n", (layer), ##__VA_ARGS__)
 
-#define SBX_ALERT(layer, fmt, ...) \
-    fprintf(stderr, "\033[31m[SANDBOX][ALERT][%s]\033[0m " fmt "\n", (layer), ##__VA_ARGS__)
-
-#define SBX_OK(layer, fmt, ...) \
-    fprintf(stderr, "\033[32m[SANDBOX][OK][%s]\033[0m " fmt "\n", (layer), ##__VA_ARGS__)
 
 /*═══
  *  caps.c — Layer 4: Capability Drop

@@ -11,9 +11,7 @@
 
 static void sandbox_limit_resources(bool is_gui)
 {
-    const char *L = "RLIMIT";
     struct rlimit rl;
-    SBX_LOG(L, "Applying kernel resource limits (DoS prevention)...");
 
     rl.rlim_cur = rl.rlim_max = is_gui ? 1024 : 32;
     setrlimit(RLIMIT_NPROC, &rl);
@@ -31,8 +29,6 @@ static void sandbox_limit_resources(bool is_gui)
 
     rl.rlim_cur = rl.rlim_max = is_gui ? 4096 : 64;
     setrlimit(RLIMIT_NOFILE, &rl);
-
-    SBX_OK(L, "Limits applied. GUI Mode: %s", is_gui ? "TRUE" : "FALSE");
 }
 
 /* Wrapper público — chamado por jail.c (vault_prepare_jail) */

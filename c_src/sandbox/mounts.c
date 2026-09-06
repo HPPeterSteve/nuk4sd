@@ -14,13 +14,10 @@
  * ───────────── */
 static void sandbox_prepare_mounts(void)
 {
-    const char *L = "MOUNTS";
-    SBX_LOG(L, "Mounting virtual filesystems inside jail...");
-
     int rp = mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);
     if (rp != 0) {
         int err = errno;
-        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: mount(\"none\", \"/\") | Error: %s (%d)\n", __func__, strerror(err), err);
+        vault_log(LOG_ERROR, "[MOUNTS] mount(\"none\", \"/\") failed: %s (%d)", strerror(err), err);
         _exit(-ERR_SYSTEM_MOUNT_FAILED);
     }
 
@@ -30,7 +27,7 @@ static void sandbox_prepare_mounts(void)
     int rr = mount("proc", "/proc", "proc", pfl, NULL);
     if (rr != 0) {
         int err = errno;
-        fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: mount(\"proc\", \"/proc\") | Error: %s (%d)\n", __func__, strerror(err), err);
+        vault_log(LOG_ERROR, "[MOUNTS] mount(\"proc\", \"/proc\") failed: %s (%d)", strerror(err), err);
         _exit(-ERR_SYSTEM_MOUNT_FAILED);
     }
 
@@ -43,7 +40,6 @@ static void sandbox_prepare_mounts(void)
 
     unsigned long shm_fl = MS_NOSUID | MS_NODEV;
     mount("tmpfs", "/dev/shm", "tmpfs", shm_fl, "mode=1777,size=256m");
-    SBX_OK(L, "/proc, /tmp, and /dev/shm ready inside jail.");
 }
 
 void vsb_prepare_mounts(void) { sandbox_prepare_mounts(); }

@@ -324,13 +324,13 @@ static int jail_install_shell(const char *vault_path)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- *  sbx_mkdir_p — cria todos os componentes intermediários do path
+ *  vault_mkdir_p — cria todos os componentes intermediários do path
  *  (espelha cli_mkdir_p de vault_cli.c — necessário porque um vault recém
  *  criado não tem NENHUM diretório padrão como /etc dentro dele. Um mkdir()
  *  de um nível só falha com ENOENT se o pai ainda não existir, ex:
  *  dst="vault/etc/fonts" mas "vault/etc" ainda não foi criado.)
  * ───────────── */
-static int sbx_mkdir_p(const char *path, mode_t mode) {
+static int vault_mkdir_p(const char *path, mode_t mode) {
     char tmp[VAULT_PATH_MAX];
     size_t len = (size_t)snprintf(tmp, sizeof(tmp), "%s", path);
     if (len == 0 || len >= sizeof(tmp)) { errno = ENAMETOOLONG; return -1; }
@@ -505,7 +505,7 @@ void vsb_bind_gui_deps(const char *jail_path)
         if (stat(gui_binds[i], &st) != 0) continue;
 
         if (S_ISDIR(st.st_mode)) {
-            if (sbx_mkdir_p(dst, 0755) != 0) {
+            if (vault_mkdir_p(dst, 0755) != 0) {
                 vault_log(LOG_WARN, "[SANDBOX] gui-bind mkdir_p '%s': %s", dst, strerror(errno));
                 continue;
             }
@@ -775,7 +775,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
         snprintf(wayland_sock, sizeof(wayland_sock), "/run/user/%d", host_uid);
         char dst_wayland[VAULT_PATH_MAX];
         snprintf(dst_wayland, sizeof(dst_wayland), "%s%s", v->path, wayland_sock);
-        sbx_mkdir_p(dst_wayland, 0700);
+        vault_mkdir_p(dst_wayland, 0700);
         
         if (mount(wayland_sock, dst_wayland, NULL, MS_BIND | MS_REC, NULL) == 0) {
             mount(NULL, dst_wayland, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
