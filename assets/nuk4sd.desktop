@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Nuk4sd
+GenericName=Security Sandbox & Vault
+Comment=Confinamento seguro de processos e gerenciador de cofres criptografados com runtime SquashFS
+Exec=nuk4sd
+TryExec=nuk4sd
+Icon=utilities-terminal
+Terminal=true
+Categories=System;Security;Utility;
+Keywords=sandbox;container;vault;security;isolation;squashfs;
+StartupNotify=true
