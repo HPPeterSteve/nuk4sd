@@ -1,0 +1,30 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    # Remove atalhos e links da Área de Trabalho de todos os usuários
+    for user_home in /home/*; do
+        if [ -d "$user_home" ]; then
+            for dt_name in "Desktop" "Área de trabalho" "Area de trabalho"; do
+                rm -f "$user_home/$dt_name/nuk4sd.desktop" 2>/dev/null || true
+                rm -f "$user_home/$dt_name/nuk4sd" 2>/dev/null || true
+            done
+        fi
+    done
+
+    # Remove da Área de Trabalho do root
+    for dt_root in "/root/Desktop" "/root/Área de trabalho" "/root/Area de trabalho"; do
+        rm -f "$dt_root/nuk4sd.desktop" 2>/dev/null || true
+        rm -f "$dt_root/nuk4sd" 2>/dev/null || true
+    done
+
+    if which update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications || true
+    fi
+
+    if which gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+    fi
+fi
+
+exit 0

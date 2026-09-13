@@ -3,6 +3,10 @@ name = "Nuk4sd"
 version = "0.9.30"
 edition = "2021"
 build = "build.rs"
+description = "Linux process isolation sandbox and encrypted vault management tool"
+license = "MPL-2.0"
+authors = ["Pedro"]
+
 
 [[bin]]
 name = "Nuk4sd"
@@ -47,6 +51,28 @@ oci-spec = "0.10.0"
 cc = "1.1"
 
 [package.metadata.bundle]
+
+[package.metadata.deb]
+name = "nuk4sd"
+maintainer = "Pedro <pedro@local>"
+copyright = "2026 Pedro"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+Nuk4sd is an advanced Linux security sandbox, vault, and container runtime \
+featuring 5-layer isolation (userns, landlock, seccomp, overlayfs, pivot_root) \
+and bundled with an Ubuntu 24.04 LTS SquashFS rootfs runtime.
+"""
+depends = "libc6 (>= 2.34), squashfs-tools, libfuse3-3, libssl3, libseccomp2, libcap2, libargon2-1"
+section = "utils"
+priority = "optional"
+maintainer-scripts = "debian"
+assets = [
+    ["target/release/Nuk4sd", "usr/bin/nuk4sd", "755"],
+    ["runtime/ubuntu24_04.squashfs", "usr/share/nuk4sd/runtime/ubuntu24_04.squashfs", "644"],
+    ["assets/nuk4sd.desktop", "usr/share/applications/nuk4sd.desktop", "644"],
+    ["README.md", "usr/share/doc/nuk4sd/README.md", "644"],
+]
+
 
 [profile.release]
 opt-level        = "z"          # Otimiza tamanho máximo (menor que "s")

@@ -1,0 +1,68 @@
+#!/bin/sh
+set -e
+
+# Garante permissões adequadas no binário e no runtime SquashFS
+if [ -f /usr/bin/nuk4sd ]; then
+    chmod 755 /usr/bin/nuk4sd
+fi
+
+if [ -f /usr/share/nuk4sd/runtime/ubuntu24_04.squashfs ]; then
+    chmod 644 /usr/share/nuk4sd/runtime/ubuntu24_04.squashfs
+fi
+
+# Função auxiliar para instalar atalhos e link do binário na Área de Trabalho
+install_desktop_shortcuts() {
+    TARGET_DIR="$1"
+    OWNER_USER="$2"
+    OWNER_GROUP="$3"
+
+    if [ -d "$TARGET_DIR" ]; then
+        # 1. Instala o atalho gráfico .desktop (com ícone e terminal automático)
+        if [ -f /usr/share/applications/nuk4sd.desktop ]; then
+            cp /usr/share/applications/nuk4sd.desktop "$TARGET_DIR/nuk4sd.desktop"
+            chmod 755 "$TARGET_DIR/nuk4sd.desktop"
+            if [ -n "$OWNER_USER" ]; then
+                chown "$OWNER_USER:$OWNER_GROUP" "$TARGET_DIR/nuk4sd.desktop" 2>/dev/null || true
+            fi
+        fi
+
+        # 2. Cria também o link direto para o binário (caso o usuário queira executar diretamente)
+        ln -sf /usr/bin/nuk4sd "$TARGET_DIR/nuk4sd"
+        if [ -n "$OWNER_USER" ]; then
+            chown -h "$OWNER_USER:$OWNER_GROUP" "$TARGET_DIR/nuk4sd" 2>/dev/null || true
+        fi
+    fi
+}
+
+# Varre todos os usuários comuns no diretório /home
+for user_home in /home/*; do
+    if [ -d "$user_home" ]; then
+        user_name=$(basename "$user_home")
+        user_group=$(id -gn "$user_name" 2>/dev/null || echo "$user_name")
+
+        # Verifica pastas de desktop comuns em inglês e português
+        for dt_name in "Desktop" "Área de trabalho" "Area de trabalho"; do
+            if [ -d "$user_home/$dt_name" ]; then
+                install_desktop_shortcuts "$user_home/$dt_name" "$user_name" "$user_group"
+            fi
+        done
+    fi
+done
+
+# Também instala na Área de Trabalho do root (se existir)
+for dt_root in "/root/Desktop" "/root/Área de trabalho" "/root/Area de trabalho"; do
+    if [ -d "$dt_root" ]; then
+        install_desktop_shortcuts "$dt_root" "root" "root"
+    fi
+done
+
+# Atualiza caches do sistema se os utilitários estiverem presentes
+if which update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+
+if which gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+fi
+
+exit 0
