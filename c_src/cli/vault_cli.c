@@ -258,6 +258,10 @@ enum {
     OPT_DISABLE_APPARMOR,
     OPT_MAC_STATUS,
     OPT_GENERATE_SECRET,
+    /* Unlocked Features */
+    OPT_MANUAL,
+    OPT_SYSINFO,
+    OPT_GUI,
 };
 
 static const struct option long_options[] = {
@@ -409,6 +413,9 @@ static const struct option long_options[] = {
     { "disable-apparmor",  optional_argument, NULL, OPT_DISABLE_APPARMOR },
     { "mac-status",        no_argument,       NULL, OPT_MAC_STATUS },
     { "generate-secret",   no_argument,       NULL, OPT_GENERATE_SECRET },
+    { "manual",            no_argument,       NULL, OPT_MANUAL },
+    { "sysinfo",           optional_argument, NULL, OPT_SYSINFO },
+    { "gui",               no_argument,       NULL, OPT_GUI },
     { NULL, 0, NULL, 0 }
 };
 
@@ -896,7 +903,8 @@ static void print_help(void) {
 
 "    --preset <name>\n"
 "      Load a named pre-configured isolation profile.\n"
-"      Built-in presets: firefox, browser, flameshot.\n\n"
+"      Built-in presets: firefox, browser, flameshot, office, evince,\n"
+"      dev, code, gedit, media, celluloid, hypnotix, nautilus and minimal.\n\n"
 
 " Observability & Audit \n"
 "  --stats\n"
@@ -963,6 +971,13 @@ static void print_help(void) {
 "  --health <pid>\n"
 "    Run a health check on a running sandbox identified by its PID.\n\n"
 
+"  --manual, -m\n"
+"    Open the interactive operational and security manual.\n\n"
+"  --sysinfo [filter]\n"
+"    Display system telemetry, resource usage and isolated processes.\n"
+"    Optional filter: cpu, mem, disk, net, proc, all.\n\n"
+"  --gui\n"
+"    Launch the desktop GUI environment using the nuk4sd-gui preset.\n\n"
 "  --version\n"
 "    Show Nuk4sd version and build information.\n\n"
 
@@ -1121,6 +1136,28 @@ static void load_profile(CliConfig *cfg, const char *path) {
             cli_expand_tilde(p+12, cfg->binds[cfg->bind_count].path, PRESET_PATH_MAX);
             cfg->binds[cfg->bind_count++].type = BIND_BLACKLIST;
         }
+        /* Desktop & Runtime */
+        else if (!strcmp(p, "--audio"))             cfg->iso_audio          = true;
+        else if (!strcmp(p, "--gpu"))               cfg->iso_gpu            = true;
+        else if (!strcmp(p, "--xdg-runtime"))       cfg->iso_xdg_runtime    = true;
+        else if (!strcmp(p, "--no-seccomp"))        cfg->iso_no_seccomp     = true;
+        else if (!strcmp(p, "--seccomp-strict") || !strcmp(p, "-q")) cfg->seccomp_strict = true;
+        else if (!strcmp(p, "--allow-clone3") || !strcmp(p, "-k"))   cfg->allow_clone3   = true;
+        else if (!strcmp(p, "--friendly-sandbox"))  cfg->friendly_sandbox   = true;
+        else if (!strcmp(p, "--permissive"))        cfg->permissive_sandbox = true;
+        else if (!strcmp(p, "--chroot"))            cfg->iso_use_chroot     = true;
+        else if (!strcmp(p, "--no-fuse"))           cfg->no_fuse            = true;
+        else if (!strcmp(p, "--no-preflight"))      cfg->skip_preflight     = true;
+        else if (!strncmp(p, "--dev ", 6))          cfg->iso_dev_level      = atoi(p + 6);
+        else if (!strncmp(p, "--preset ", 9))       cfg->iso_preset         = strdup(p + 9);
+        else if (!strncmp(p, "--display ", 10))     cfg->iso_display        = strdup(p + 10);
+        else if (!strncmp(p, "--wayland-display ", 18)) cfg->iso_wayland_disp = strdup(p + 18);
+        else if (!strncmp(p, "--hostname ", 11))    cfg->iso_hostname       = strdup(p + 11);
+        else if (!strncmp(p, "--max-procs ", 12))   cfg->iso_max_procs      = atoi(p + 12);
+        else if (!strncmp(p, "--max-mem ", 10))     cfg->iso_max_mem_gb     = atoi(p + 10);
+        else if (!strncmp(p, "--max-filesize ", 15)) cfg->iso_max_fsize_mb  = atoi(p + 15);
+        else if (!strncmp(p, "--max-fds ", 10))     cfg->iso_max_fds        = atoi(p + 10);
+        else if (!strncmp(p, "--tmp-size ", 11))    cfg->iso_tmp_size_mb    = atoi(p + 11);
         else {
             fprintf(stderr, "š  profile '%s': unknown flag '%s'  skipped\n", path, p);
         }
@@ -1671,6 +1708,18 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
             break;
         case OPT_GENERATE_SECRET:
             cfg->op_generate_secret = true;
+            break;
+        case OPT_MANUAL:
+            cfg->op_manual = true;
+            break;
+        case OPT_SYSINFO:
+            cfg->op_sysinfo = true;
+            if (optarg && optarg[0])
+                cfg->sysinfo_target = optarg;
+            break;
+        case OPT_GUI:
+            cfg->op_gui = true;
+            cfg->iso_preset = "nuk4sd-gui";
             break;
         case '?':
         default:
