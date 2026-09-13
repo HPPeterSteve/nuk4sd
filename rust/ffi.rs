@@ -248,6 +248,27 @@ pub extern "C" fn rust_oci_pull_image(
     let url_raw = unsafe { CStr::from_ptr(url_or_alias) }.to_string_lossy();
     let dir_raw = unsafe { CStr::from_ptr(target_dir) }.to_string_lossy();
 
+    /* Check for bundled or local SquashFS runtime first before downloading */
+    if url_raw == "ubuntu" || url_raw == "ubuntu-noble" || url_raw == "default" {
+        let candidates = [
+            std::env::var("NUK4SD_RUNTIME_PATH").unwrap_or_default(),
+            "/usr/share/nuk4sd/runtime/ubuntu24_04.squashfs".to_string(),
+            "./runtime/ubuntu24_04.squashfs".to_string(),
+        ];
+        for cand in &candidates {
+            if !cand.is_empty() && Path::new(cand).exists() {
+                println!("[Nuk4sd] Using bundled SquashFS runtime: {}", cand);
+                return match pull_and_extract_image(cand, target) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("[OCI] extract squashfs failed: {}", e);
+                        -1
+                    }
+                };
+            }
+        }
+    }
+
     /* Resolve aliases → GitHub release download URLs */
     let url = match url_raw.as_ref() {
         "alpine" | "alpine-latest" =>

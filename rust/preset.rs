@@ -217,6 +217,44 @@ pub struct CliConfig {
     pub snapshot_diff_tag1: *mut c_char,
     pub snapshot_diff_tag2: *mut c_char,
 
+    // Cryptographic Integrity
+    pub op_hash: bool,
+    pub hash_target: *mut c_char,
+    pub op_baseline: bool,
+    pub op_verify: bool,
+    pub op_integrity: bool,
+    pub op_repair: bool,
+    pub op_diff: bool,
+    pub diff_other: *mut c_char,
+
+    // Backup & Import
+    pub op_backup: bool,
+    pub backup_out: *mut c_char,
+    pub op_restore: bool,
+    pub restore_archive: *mut c_char,
+    pub op_import: bool,
+    pub import_src: *mut c_char,
+
+    // Lock/Unlock
+    pub op_lock: bool,
+    pub op_lock_status: bool,
+    pub op_force_unlock: bool,
+
+    // Key Lifecycle
+    pub op_key_info: bool,
+    pub op_key_rotate: bool,
+    pub key_rotate_old: *mut c_char,
+    pub key_rotate_new: *mut c_char,
+    pub op_rekey: bool,
+
+    // Observability
+    pub op_stats: bool,
+    pub op_usage: bool,
+    pub op_inspect: bool,
+    pub inspect_target: *mut c_char,
+    pub op_history: bool,
+    pub op_events: bool,
+
     pub binds: [BindEntry; MAX_BINDS],
     pub bind_count: c_int,
 
@@ -233,6 +271,12 @@ pub struct CliConfig {
     pub op_mac_status: bool,         // --mac-status
     pub op_generate_secret: bool,    // --generate-secret
     pub vault_export_dest: *mut c_char, // destination for --mount-export
+
+    // Unlocked features
+    pub op_manual: bool,             // --manual: interactive manual
+    pub op_sysinfo: bool,            // --sysinfo: system telemetry
+    pub sysinfo_target: *mut c_char, // optional target filter
+    pub op_gui: bool,                // --gui: launch desktop GUI
 }
 
 

@@ -257,6 +257,12 @@ typedef struct {
     bool  op_mac_status;         /* --mac-status                          */
     bool  op_generate_secret;    /* --generate-secret                     */
     char *vault_export_dest;     /* destination dir for --mount-export     */
+
+    /* Unlocked Features */
+    bool  op_manual;             /* --manual: show interactive manual     */
+    bool  op_sysinfo;            /* --sysinfo: system and process telemetry */
+    char *sysinfo_target;        /* optional target filter                */
+    bool  op_gui;                /* --gui: launch desktop GUI             */
 } CliConfig;
 
 /* Surgical dependency scanner */
