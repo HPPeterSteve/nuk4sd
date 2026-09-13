@@ -8,9 +8,10 @@
  * which are passed to vault_cli_parse_and_exec in the C core.
  *
  * Special REPL commands (do not pass to C core):
- *   help      → prints quick help
- *   exit/quit → exit
- *   !<cmd>    → executes shell command
+ *   help / --help → prints quick help
+ *   manual        → opens interactive manual
+ *   sysinfo       → displays system and process telemetry
+ *   exit/quit     → exit
  */
 
 use colored::*;
@@ -26,7 +27,7 @@ extern "C" {
 pub fn run() {
     println!(
         "{}",
-        "Nuk4sd — type --help for commands, exit to quit."
+        "Nuk4sd — type --help for commands, manual for guide, sysinfo for telemetry, exit to quit."
             .bright_green()
     );
 
@@ -44,14 +45,20 @@ pub fn run() {
 
                 match input {
                     "exit" | "quit" => break,
-
-                    /* Shell passthrough: !ls, !cat file, etc. */
-                    s if s.starts_with('!') => {
-                        let cmd = &s[1..];
-                        let _ = std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(cmd)
-                            .status();
+                    "manual" | "--manual" => {
+                        crate::manual::show_manual();
+                        continue;
+                    }
+                    "sysinfo" | "--sysinfo" => {
+                        let options = crate::sys_info::SystemOptions {
+                            cpu: true,
+                            memory: true,
+                            disks: true,
+                            networks: true,
+                            processes: true,
+                        };
+                        crate::sys_info::system_information(options);
+                        continue;
                     }
 
                     /* Everything else goes to C core as if CLI argv */
