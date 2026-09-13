@@ -1,13 +1,13 @@
 use sysinfo::{Disks, Networks, System};
 
-/// Lista todos os processos ativos com detalhes de consumo e status de isolamento
+/// Lists all active processes with consumption details and isolation status
 pub fn list_process_status(options: &SystemOptions) {
     let mut sys = System::new_all();
     sys.refresh_all();
 
     println!(
         "\n{:<10} {:<25} {:<12} {:<15}",
-        "PID", "PROCESSO", "MEMÓRIA", "STATUS"
+        "PID", "PROCESS", "MEMORY", "STATUS"
     );
     println!("{:-<62}", "");
 
@@ -15,9 +15,9 @@ pub fn list_process_status(options: &SystemOptions) {
         let pid_u32 = pid.as_u32();
         let mem_mb = process.memory() as f64 / 1_048_576.0;
         let status = if process.cpu_usage() > 0.0 {
-            "ISOLADO/ATIVO"
+            "ISOLATED/ACTIVE"
         } else {
-            "ISOLADO/IDLE"
+            "ISOLATED/IDLE"
         };
 
         if options.processes {
@@ -33,7 +33,7 @@ pub fn list_process_status(options: &SystemOptions) {
 }
 
 
-// Estrutura de opções para escolher quais infos mostrar
+// Options struct to specify system info to display
 pub struct SystemOptions {
     pub cpu: bool,
     pub memory: bool,
@@ -42,7 +42,7 @@ pub struct SystemOptions {
     pub processes: bool,
 }
 
-// Função principal para mostrar informações do sistema
+// Main function to display system information
 pub fn system_information(options: SystemOptions) {
     let mut sys_info = System::new_all();
     sys_info.refresh_all();

@@ -2,7 +2,7 @@
  * mounts.c
  *
  * Nuk4sd — Hardened Sandbox — Layer 2: Mount Namespace (/proc, /tmp)
- * Extraído de vault_sandbox.c 
+ * Extracted from vault_sandbox.c
  */
 
 #include "sandbox.h"
@@ -10,8 +10,8 @@
 #ifdef __linux__
 
 /* ─────────────────────────────────────────────────────────────────────────
- *  sandbox_prepare_mounts(): /proc + /tmp virtuais dentro do jail
- * ───────────── */
+ *  sandbox_prepare_mounts(): virtual /proc + /tmp inside the jail
+ * ───────────────────────────────────────────────────────────────────────── */
 static void sandbox_prepare_mounts(void)
 {
     int rp = mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL);

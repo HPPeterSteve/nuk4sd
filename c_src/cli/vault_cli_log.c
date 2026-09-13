@@ -1,9 +1,9 @@
 /*
  * vault_cli_log.c
  *
- * Nuk4sd — CLI audit/diagnostic logger (implementação)
+ * Nuk4sd — CLI audit/diagnostic logger (implementation)
  *
- * Formato de linha:
+ * Line format:
  *   [2026-06-28 13:45:01] [PID 12345] [SEC ] [WORM    ] vault=3 protect-delete=ON
  *
  * Author: Peter Steve
@@ -36,14 +36,14 @@
 static FILE *s_logfp   = NULL;
 static bool  s_verbose = false;
 
-/* ─── cores ANSI para stderr verbose ─── */
+/* ─── ANSI colors for verbose stderr ─── */
 #define COL_RESET  "\033[0m"
-#define COL_CMD    "\033[36m"   /* ciano   — CMD  */
-#define COL_INFO   "\033[32m"   /* verde   — INFO */
-#define COL_KERN   "\033[34m"   /* azul    — KERN */
+#define COL_CMD    "\033[36m"   /* cyan    — CMD  */
+#define COL_INFO   "\033[32m"   /* green   — INFO */
+#define COL_KERN   "\033[34m"   /* blue    — KERN */
 #define COL_SEC    "\033[35m"   /* magenta — SEC  */
-#define COL_WARN   "\033[33m"   /* amarelo — WARN */
-#define COL_ERROR  "\033[31m"   /* vermelho— ERROR*/
+#define COL_WARN   "\033[33m"   /* yellow  — WARN */
+#define COL_ERROR  "\033[31m"   /* red     — ERROR*/
 
 static const char *level_str(CliLogLevel l) {
     switch (l) {
@@ -73,12 +73,12 @@ void cli_log_init(const char *path) {
     char default_path[512];
 
     if (!path) {
-        /* Usa ~/.local/share/Nuk4sd/cli.log */
+        /* Use ~/.local/share/Nuk4sd/cli.log */
         const char *home = getenv("HOME");
         if (!home) home = "/tmp";
         snprintf(default_path, sizeof(default_path),
                  "%s/.local/share/Nuk4sd", home);
-        /* Cria diretório se não existir */
+        /* Create directory if missing */
         mkdir(default_path, 0700);
         snprintf(default_path, sizeof(default_path),
                  "%s/.local/share/Nuk4sd/cli.log", home);
@@ -87,9 +87,9 @@ void cli_log_init(const char *path) {
 
     s_logfp = fopen(path, "a");
     if (!s_logfp) {
-        fprintf(stderr, "[cli_log] aviso: não foi possível abrir '%s': %s\n",
+        fprintf(stderr, "[cli_log] warning: could not open '%s': %s\n",
                 path, strerror(errno));
-        /* Continua sem arquivo — logs vão só para stderr */
+        /* Continue without file — logs go to stderr only */
     }
 }
 
@@ -115,21 +115,21 @@ void cli_log(CliLogLevel level, const char *module, const char *fmt, ...) {
 
     pid_t pid = getpid();
 
-    /* Formata mensagem */
+    /* Format message */
     char msg[2048];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
 
-    /* ── Arquivo de log (sem cores) ── */
+    /* ── Log file (no colors) ── */
     if (s_logfp) {
         fprintf(s_logfp, "[%s] [PID %-6d] [%s] [%-8s] %s\n",
                 ts, (int)pid, level_str(level), module ? module : "CLI", msg);
         fflush(s_logfp);
     }
 
-    /* ── stderr: sempre para WARN/ERROR; para outros níveis só se verbose ── */
+    /* ── stderr: always for WARN/ERROR; for other levels only if verbose ── */
     bool print_stderr = (level >= CLI_LOG_WARN) || s_verbose;
     if (print_stderr) {
         fprintf(stderr, "%s[%s] [%s] [%-8s]%s %s\n",
@@ -144,14 +144,14 @@ void cli_log(CliLogLevel level, const char *module, const char *fmt, ...) {
 
 
 void cli_log_command(int argc, char **argv, int32_t vault_id) {
-    /* Loga argv completo, omitindo o valor de --password */
+    /* Logs complete argv, hiding value of --password */
     char buf[1024] = {0};
     int  pos = 0;
     bool skip_next = false;
 
     for (int i = 0; i < argc && pos < (int)sizeof(buf) - 4; i++) {
         if (skip_next) {
-            /* Substitui o valor da senha por *** */
+            /* Replace password value with *** */
             pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "*** ");
             skip_next = false;
             continue;
@@ -168,9 +168,9 @@ void cli_log_command(int argc, char **argv, int32_t vault_id) {
 
 void cli_log_operation_start(const char *op_name, int32_t vault_id) {
     if (vault_id >= 0)
-        cli_log(CLI_LOG_INFO, op_name, "iniciando operação vault_id=%d", vault_id);
+        cli_log(CLI_LOG_INFO, op_name, "starting operation vault_id=%d", vault_id);
     else
-        cli_log(CLI_LOG_INFO, op_name, "iniciando operação (sem vault_id)");
+        cli_log(CLI_LOG_INFO, op_name, "starting operation (no vault_id)");
 }
 
 void cli_log_operation_result(const char *op_name, int32_t vault_id, int ret) {
@@ -306,7 +306,7 @@ void cli_log_namespace_event(const char *ns_name, int flags,
 
 void cli_log_mount_event(const char *src, const char *dst,
                          const char *fstype, unsigned long flags, int result) {
-    /* Decodifica flags MS_* mais comuns */
+    /* Decode most common MS_* flags */
     char flag_str[256] = {0};
     int  pos = 0;
 
@@ -346,7 +346,7 @@ void cli_log_mount_event(const char *src, const char *dst,
 void cli_log_pivot_root(const char *new_root, int result) {
     if (result == 0) {
         cli_log(CLI_LOG_KERN, "PIVOT_ROOT",
-                "pivot_root('%s') → OK (filesystem raiz substituído)",
+                "pivot_root('%s') → OK (root filesystem replaced)",
                 new_root);
     } else {
         cli_log(CLI_LOG_ERROR, "PIVOT_ROOT",
@@ -361,7 +361,7 @@ void cli_log_cap_drop(int result) {
     if (result == 0) {
         cli_log(CLI_LOG_SEC, "CAPABILITIES",
                 "cap_set_proc(empty) + PR_SET_KEEPCAPS=0 + NO_NEW_PRIVS=1 → OK "
-                "(todas as Linux Capabilities removidas)");
+                "(all Linux Capabilities removed)");
     } else {
         cli_log(CLI_LOG_ERROR, "CAPABILITIES",
                 "cap drop → FAILED errno=%d (%s)", result, strerror(result));
@@ -373,9 +373,9 @@ void cli_log_cap_drop(int result) {
 void cli_log_seccomp(int result) {
     if (result == 0) {
         cli_log(CLI_LOG_SEC, "SECCOMP",
-                "seccomp-BPF allowlist carregado → OK "
-                "(política: ERRNO(EPERM) para syscalls fora da allowlist; "
-                "kexec_load/process_vm_writev continuam com KILL_PROCESS)");
+                "seccomp-BPF allowlist loaded → OK "
+                "(policy: ERRNO(EPERM) for non-allowlisted syscalls; "
+                "kexec_load/process_vm_writev remain KILL_PROCESS)");
     } else {
         cli_log(CLI_LOG_ERROR, "SECCOMP",
                 "seccomp load → FAILED errno=%d (%s)", result, strerror(result));
@@ -395,31 +395,31 @@ void cli_log_exec(const char *exec, char **argv, int argc) {
             "execvp('%s') argc=%d args=[%s]", exec, argc, args);
 }
 
-/* ─── Saída do sandbox ───────────────────────────────────────────────────── */
+/* ─── Sandbox exit ───────────────────────────────────────────────────────── */
 
 void cli_log_sandbox_exit(pid_t pid, int exit_code, int signal_num) {
     if (signal_num != 0) {
         cli_log(CLI_LOG_WARN, "SANDBOX",
-                "processo filho pid=%d morto por sinal=%d "
-                "(possível violação seccomp/namespace)",
+                "child process pid=%d killed by signal=%d "
+                "(possible seccomp/namespace violation)",
                 (int)pid, signal_num);
     } else {
         CliLogLevel lv = (exit_code == 0) ? CLI_LOG_INFO : CLI_LOG_WARN;
         cli_log(lv, "SANDBOX",
-                "processo filho pid=%d encerrou exit_code=%d",
+                "child process pid=%d exited exit_code=%d",
                 (int)pid, exit_code);
     }
 }
 
-/* ─── Autenticação ───────────────────────────────────────────────────────── */
+/* ─── Authentication ─────────────────────────────────────────────────────── */
 
 void cli_log_auth_event(int32_t vault_id, bool success) {
     if (success) {
         cli_log(CLI_LOG_SEC, "AUTH",
-                "vault_id=%d autenticação OK", vault_id);
+                "vault_id=%d authentication OK", vault_id);
     } else {
         cli_log(CLI_LOG_SEC, "AUTH",
-                "vault_id=%d autenticação FALHOU (senha incorreta ou vault locked)",
+                "vault_id=%d authentication FAILED (incorrect password or vault locked)",
                 vault_id);
     }
 }

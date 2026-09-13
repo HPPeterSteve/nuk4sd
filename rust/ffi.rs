@@ -55,11 +55,11 @@ impl VaultStatus {
 
     pub fn label(&self) -> &'static str {
         match self {
-            VaultStatus::Ok => "Montado / Ativo",
-            VaultStatus::Locked => "Desmontado / Trancado",
-            VaultStatus::Alert => "Alerta de Integridade",
-            VaultStatus::Deleted => "Removido",
-            VaultStatus::Unknown(_) => "Desconhecido",
+            VaultStatus::Ok => "Mounted / Active",
+            VaultStatus::Locked => "Unmounted / Locked",
+            VaultStatus::Alert => "Integrity Alert",
+            VaultStatus::Deleted => "Removed",
+            VaultStatus::Unknown(_) => "Unknown",
         }
     }
 }
@@ -116,26 +116,26 @@ impl VaultError {
 
     pub fn message(&self) -> String {
         match self {
-            VaultError::Ok => "Operação realizada com sucesso".into(),
-            VaultError::InvalidArgs => "Argumentos inválidos".into(),
-            VaultError::NoMemory => "Memória insuficiente".into(),
-            VaultError::Io => "Erro de entrada/saída (I/O)".into(),
-            VaultError::Crypto => "Erro de criptografia (OpenSSL/Argon2)".into(),
-            VaultError::AuthFail => "Senha incorreta ou falha de autenticação".into(),
-            VaultError::VaultLocked => "O vault está trancado".into(),
-            VaultError::VaultExists => "O vault especificado já existe".into(),
-            VaultError::VaultNotFound => "Vault não encontrado".into(),
-            VaultError::PermDenied => "Permissão negada".into(),
-            VaultError::CatalogFull => "Catálogo de vaults cheio".into(),
-            VaultError::PathInvalid => "Caminho de arquivo inválido".into(),
-            VaultError::PassRequired => "Senha é obrigatória".into(),
-            VaultError::Integrity => "Falha na verificação de integridade".into(),
-            VaultError::System => "Erro no subsistema do sistema operacional".into(),
-            VaultError::SystemUnshareFailed => "[KERNEL] Syscall unshare() falhou ao isolar namespaces".into(),
-            VaultError::SystemMountFailed => "[KERNEL] Syscall mount() falhou (possível EPERM/EINVAL)".into(),
-            VaultError::SystemPivotRootFailed => "[KERNEL] Syscall pivot_root() falhou ao trocar raiz".into(),
-            VaultError::SystemCloneFailed => "[KERNEL] Syscall clone() falhou ao iniciar subprocesso".into(),
-            VaultError::Unknown(code) => format!("Erro desconhecido ({code})"),
+            VaultError::Ok => "Operation completed successfully".into(),
+            VaultError::InvalidArgs => "Invalid arguments".into(),
+            VaultError::NoMemory => "Insufficient memory".into(),
+            VaultError::Io => "Input/output error (I/O)".into(),
+            VaultError::Crypto => "Cryptography error (OpenSSL/Argon2)".into(),
+            VaultError::AuthFail => "Incorrect password or authentication failure".into(),
+            VaultError::VaultLocked => "The vault is locked".into(),
+            VaultError::VaultExists => "The specified vault already exists".into(),
+            VaultError::VaultNotFound => "Vault not found".into(),
+            VaultError::PermDenied => "Permission denied".into(),
+            VaultError::CatalogFull => "Vault catalog full".into(),
+            VaultError::PathInvalid => "Invalid file path".into(),
+            VaultError::PassRequired => "Password is required".into(),
+            VaultError::Integrity => "Integrity verification failure".into(),
+            VaultError::System => "Operating system subsystem error".into(),
+            VaultError::SystemUnshareFailed => "[KERNEL] Syscall unshare() failed to isolate namespaces".into(),
+            VaultError::SystemMountFailed => "[KERNEL] Syscall mount() failed (possible EPERM/EINVAL)".into(),
+            VaultError::SystemPivotRootFailed => "[KERNEL] Syscall pivot_root() failed to swap root".into(),
+            VaultError::SystemCloneFailed => "[KERNEL] Syscall clone() failed to start subprocess".into(),
+            VaultError::Unknown(code) => format!("Unknown error ({code})"),
         }
     }
 }
@@ -199,9 +199,9 @@ extern "C" {
 
     fn vault_cli_parse_and_exec(argc: c_int, argv: *const *const c_char) -> c_int;
 
-    /// Lança o sandbox com CliConfig preenchido direto por parâmetros tipados —
-    /// sem string de linha de comando, sem join/split, sem getopt. Ver
-    /// vault_cli.c para o porquê disso existir (bug de path com espaço).
+    /// Launches the sandbox with CliConfig populated directly by typed parameters —
+    /// no command line string, no join/split, no getopt. See vault_cli.c for rationale
+    /// (path with space bug workaround).
     fn vault_sandbox_run_ffi(
         vault_id: u32,
         password: *const c_char,
@@ -212,8 +212,8 @@ extern "C" {
         audio: bool,
         ro_home: bool,
         no_fuse: bool,
+        seccomp_strict: bool,
         use_chroot: bool,
-        image_path: *const c_char,
 
         ro_paths: *const *const c_char,
         ro_count: u32,
@@ -279,22 +279,41 @@ pub extern "C" fn rust_cgroup_apply(
     pid: u64,
     memory_limit_mb: i64,
     cpu_shares: u64,
+    cpu_quota_us: i64,
+    max_procs: i64,
 ) -> c_int {
     use crate::oci::apply_cgroup_limits;
 
+    if cgroup_name.is_null() {
+        return -1;
+    }
     let name = unsafe { CStr::from_ptr(cgroup_name) }.to_string_lossy();
-    match apply_cgroup_limits(&name, pid, memory_limit_mb, cpu_shares) {
-        Ok(_cg) => {
-            /* Note: cgroup handle leaks here intentionally — the kernel cleans it
-             * up when the child PID exits and the cgroup becomes empty.
-             * std::mem::forget(_cg) is implicit by not calling delete(). */
-            0
-        }
+    match apply_cgroup_limits(&name, pid, memory_limit_mb, cpu_shares, cpu_quota_us, max_procs) {
+        Ok(_cg) => 0,
         Err(e) => {
             eprintln!("[CGROUP] apply failed: {}", e);
             -1
         }
     }
+}
+
+/// Called from C when child terminates to remove the cgroup.
+#[cfg(target_os = "linux")]
+#[no_mangle]
+pub extern "C" fn rust_cgroup_cleanup(
+    cgroup_name: *const c_char,
+) -> c_int {
+    use crate::oci::remove_cgroup;
+
+    if cgroup_name.is_null() {
+        return 0;
+    }
+    let name = unsafe { CStr::from_ptr(cgroup_name) }.to_string_lossy();
+    if let Err(e) = remove_cgroup(&name) {
+        eprintln!("[CGROUP] cleanup warning: {}", e);
+        return -1;
+    }
+    0
 }
 
 /// Stub for non-Linux targets to keep the build clean on Windows.
@@ -312,7 +331,545 @@ pub extern "C" fn rust_cgroup_apply(
     _pid: u64,
     _memory_limit_mb: i64,
     _cpu_shares: u64,
+    _cpu_quota_us: i64,
+    _max_procs: i64,
 ) -> c_int { -1 }
+
+#[cfg(not(target_os = "linux"))]
+#[no_mangle]
+pub extern "C" fn rust_cgroup_cleanup(
+    _cgroup_name: *const c_char,
+) -> c_int { 0 }
+
+// ─── Vault Operations FFI (Rust -> C) ────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn rust_vault_add(
+    vault_path: *const c_char,
+    src_file: *const c_char,
+    recursive: bool,
+    replace: bool,
+    preserve: bool,
+) -> c_int {
+    if vault_path.is_null() || src_file.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let src = unsafe { CStr::from_ptr(src_file) }.to_string_lossy();
+    match crate::vault_ops::vault_add(&vp, &src, recursive, replace, preserve) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-ADD] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_extract(
+    vault_path: *const c_char,
+    rel_file: *const c_char,
+    dest_dir: *const c_char,
+    force: bool,
+) -> c_int {
+    if vault_path.is_null() || rel_file.is_null() || dest_dir.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let src = unsafe { CStr::from_ptr(rel_file) }.to_string_lossy();
+    let dst = unsafe { CStr::from_ptr(dest_dir) }.to_string_lossy();
+    match crate::vault_ops::vault_extract(&vp, &src, &dst, force) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-EXTRACT] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_mv(
+    vault_path: *const c_char,
+    src_rel: *const c_char,
+    dst_rel: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || src_rel.is_null() || dst_rel.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let src = unsafe { CStr::from_ptr(src_rel) }.to_string_lossy();
+    let dst = unsafe { CStr::from_ptr(dst_rel) }.to_string_lossy();
+    match crate::vault_ops::vault_mv(&vp, &src, &dst) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-MV] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_cp(
+    vault_path: *const c_char,
+    src_rel: *const c_char,
+    dst_rel: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || src_rel.is_null() || dst_rel.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let src = unsafe { CStr::from_ptr(src_rel) }.to_string_lossy();
+    let dst = unsafe { CStr::from_ptr(dst_rel) }.to_string_lossy();
+    match crate::vault_ops::vault_cp(&vp, &src, &dst) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-CP] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_rm_file(
+    vault_path: *const c_char,
+    target_rel: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || target_rel.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let target = unsafe { CStr::from_ptr(target_rel) }.to_string_lossy();
+    match crate::vault_ops::vault_rm_file(&vp, &target) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-RM] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_mkdir(
+    vault_path: *const c_char,
+    dir_rel: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || dir_rel.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let dir = unsafe { CStr::from_ptr(dir_rel) }.to_string_lossy();
+    match crate::vault_ops::vault_mkdir(&vp, &dir) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-MKDIR] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_rmdir(
+    vault_path: *const c_char,
+    dir_rel: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || dir_rel.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let dir = unsafe { CStr::from_ptr(dir_rel) }.to_string_lossy();
+    match crate::vault_ops::vault_rmdir(&vp, &dir) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-RMDIR] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_tree(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_tree(&vp) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-TREE] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_du(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_du(&vp) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-DU] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_find(
+    vault_path: *const c_char,
+    pattern: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || pattern.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let pat = unsafe { CStr::from_ptr(pattern) }.to_string_lossy();
+    match crate::vault_ops::vault_find(&vp, &pat) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-FIND] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_snapshot(
+    vault_path: *const c_char,
+    tag: *const c_char,
+) -> c_int {
+    if vault_path.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let tag_opt = if tag.is_null() {
+        None
+    } else {
+        let s = unsafe { CStr::from_ptr(tag) }.to_string_lossy();
+        if s.trim().is_empty() { None } else { Some(s) }
+    };
+    match crate::vault_ops::vault_snapshot_create(&vp, tag_opt.as_deref()) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-SNAPSHOT] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_snapshots(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_snapshot_list(&vp) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-SNAPSHOTS] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_snapshot_delete(
+    vault_path: *const c_char,
+    tag: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || tag.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let t = unsafe { CStr::from_ptr(tag) }.to_string_lossy();
+    match crate::vault_ops::vault_snapshot_delete(&vp, &t) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-SNAPSHOT-DELETE] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_snapshot_restore(
+    vault_path: *const c_char,
+    tag: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || tag.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let t = unsafe { CStr::from_ptr(tag) }.to_string_lossy();
+    match crate::vault_ops::vault_snapshot_restore(&vp, &t) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-SNAPSHOT-RESTORE] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_snapshot_diff(
+    vault_path: *const c_char,
+    tag1: *const c_char,
+    tag2: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || tag1.is_null() {
+        return -1;
+    }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let t1 = unsafe { CStr::from_ptr(tag1) }.to_string_lossy();
+    let t2_opt = if tag2.is_null() {
+        None
+    } else {
+        let s = unsafe { CStr::from_ptr(tag2) }.to_string_lossy();
+        if s.trim().is_empty() { None } else { Some(s) }
+    };
+    match crate::vault_ops::vault_snapshot_diff(&vp, &t1, t2_opt.as_deref()) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("✖ [VAULT-SNAPSHOT-DIFF] {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_hash(
+    vault_path: *const c_char,
+    target_rel: *const c_char,
+) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let rel_opt = if target_rel.is_null() {
+        None
+    } else {
+        let s = unsafe { CStr::from_ptr(target_rel) }.to_string_lossy();
+        if s.trim().is_empty() { None } else { Some(s) }
+    };
+    match crate::vault_ops::vault_hash(&vp, rel_opt.as_deref()) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-HASH] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_baseline(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_baseline(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-BASELINE] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_verify(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_verify(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-VERIFY] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_integrity(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_integrity(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-INTEGRITY] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_repair(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_repair(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-REPAIR] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_diff(vault_path: *const c_char, other: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let other_opt = if other.is_null() {
+        None
+    } else {
+        let s = unsafe { CStr::from_ptr(other) }.to_string_lossy();
+        if s.trim().is_empty() { None } else { Some(s) }
+    };
+    match crate::vault_ops::vault_diff(&vp, other_opt.as_deref()) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-DIFF] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_backup(vault_path: *const c_char, out_archive: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let out_opt = if out_archive.is_null() {
+        None
+    } else {
+        let s = unsafe { CStr::from_ptr(out_archive) }.to_string_lossy();
+        if s.trim().is_empty() { None } else { Some(s) }
+    };
+    match crate::vault_ops::vault_backup(&vp, out_opt.as_deref()) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-BACKUP] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_restore(vault_path: *const c_char, in_archive: *const c_char) -> c_int {
+    if vault_path.is_null() || in_archive.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let arch = unsafe { CStr::from_ptr(in_archive) }.to_string_lossy();
+    match crate::vault_ops::vault_restore(&vp, &arch) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-RESTORE] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_import(vault_path: *const c_char, src: *const c_char) -> c_int {
+    if vault_path.is_null() || src.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let s = unsafe { CStr::from_ptr(src) }.to_string_lossy();
+    match crate::vault_ops::vault_import(&vp, &s) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-IMPORT] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_lock(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_lock(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-LOCK] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_lock_status(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_lock_status(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-LOCK-STATUS] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_force_unlock(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_force_unlock(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-FORCE-UNLOCK] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_key_info(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_key_info(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-KEY-INFO] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_key_rotate(
+    vault_path: *const c_char,
+    old_p: *const c_char,
+    new_p: *const c_char,
+) -> c_int {
+    if vault_path.is_null() || old_p.is_null() || new_p.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let o = unsafe { CStr::from_ptr(old_p) }.to_string_lossy();
+    let n = unsafe { CStr::from_ptr(new_p) }.to_string_lossy();
+    match crate::vault_ops::vault_key_rotate(&vp, &o, &n) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-KEY-ROTATE] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_rekey(vault_path: *const c_char, pass: *const c_char) -> c_int {
+    if vault_path.is_null() || pass.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let p = unsafe { CStr::from_ptr(pass) }.to_string_lossy();
+    match crate::vault_ops::vault_rekey(&vp, &p) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-REKEY] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_stats(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_stats(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-STATS] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_usage(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_usage(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-USAGE] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_inspect(vault_path: *const c_char, rel_file: *const c_char) -> c_int {
+    if vault_path.is_null() || rel_file.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    let f = unsafe { CStr::from_ptr(rel_file) }.to_string_lossy();
+    match crate::vault_ops::vault_inspect(&vp, &f) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-INSPECT] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_history(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_history(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-HISTORY] {}", e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_vault_events(vault_path: *const c_char) -> c_int {
+    if vault_path.is_null() { return -1; }
+    let vp = unsafe { CStr::from_ptr(vault_path) }.to_string_lossy();
+    match crate::vault_ops::vault_events(&vp) {
+        Ok(_) => 0,
+        Err(e) => { eprintln!("✖ [VAULT-EVENTS] {}", e); -1 }
+    }
+}
+
+
 
 
 pub fn init() -> VResult {
@@ -407,8 +964,8 @@ pub fn list_vaults() -> Result<Vec<VaultEntry>, VaultError> {
     Ok(out)
 }
 
-/// Opções de isolamento pra `run_sandbox`. Espelha os campos `iso_*`/`no_fuse`/
-/// `seccomp_strict` de CliConfig que a GUI já expõe como checkboxes.
+/// Isolation options for `run_sandbox`. Mirrors `iso_*`/`no_fuse`/
+/// `seccomp_strict` fields in CliConfig exposed by UI.
 #[derive(Clone, Debug, Default)]
 pub struct SandboxOptions {
     pub no_net: bool,
@@ -422,10 +979,9 @@ pub struct SandboxOptions {
     pub image: Option<String>,
 }
 
-/// Aceita "um path por linha" ou "path, path, path" no mesmo campo de texto
-/// que a GUI já usa — sem exigir mudar o widget. Espaço sozinho dentro de um
-/// path nunca quebra nada aqui, porque cada elemento vira seu próprio
-/// CString: não existe join(" ") + re-split em lugar nenhum deste caminho.
+/// Accepts "one path per line" or "path, path, path" in the same text field
+/// used by the UI without requiring widget changes. Spaces inside a
+/// path will not break operations as each entry becomes its own CString.
 pub fn split_paths(field: &str) -> Vec<String> {
     field
         .split(['\n', ','])
@@ -434,18 +990,16 @@ pub fn split_paths(field: &str) -> Vec<String> {
         .collect()
 }
 
-/// Constrói os CString + array de ponteiros pra uma lista de paths, mantendo
-/// os CString vivos (o array de ponteiros só é válido enquanto eles existirem).
+/// Constructs CString + array of pointers for a path list while keeping
+/// CString instances alive (pointer array is valid only while CStrings exist).
 fn cstring_array(paths: &[String]) -> (Vec<CString>, Vec<*const c_char>) {
     let owned: Vec<CString> = paths.iter().map(|p| cstr(p)).collect();
     let ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
     (owned, ptrs)
 }
 
-/// Lança `exec_path` isolado no sandbox do vault `id`, com as opções e listas
-/// de bind (ro/rw/blacklist) passadas como parâmetros tipados — substitui
-/// por completo o antigo caminho "monta string --flag valor + exec_cli_cmd",
-/// que quebrava com espaço em path/executável.
+/// Launches isolated `exec_path` inside vault `id` sandbox using typed options
+/// and bind arrays (ro/rw/blacklist) passed as typed parameters.
 pub fn run_sandbox(
     id: u32,
     password: &str,
@@ -477,7 +1031,6 @@ pub fn run_sandbox(
             opts.no_fuse,
             opts.seccomp_strict,
             opts.use_chroot,
-            image_ptr,
             ro_ptrs.as_ptr(),
             ro_ptrs.len() as u32,
             rw_ptrs.as_ptr(),
@@ -486,17 +1039,9 @@ pub fn run_sandbox(
             bl_ptrs.len() as u32,
         ))
     }
-    // _ro_owned/_rw_owned/_bl_owned seguram os CString vivos até aqui —
-    // só dropam depois que vault_sandbox_run_ffi já retornou.
 }
 
-/// Executa qualquer linha de comando do Nuk4sd diretamente em memória no core C.
-///
-/// USO: só pelo terminal embutido da GUI, onde o próprio usuário digita
-/// sintaxe de CLI de propósito (texto livre é a entrada certa ali). Pra
-/// lançar sandbox a partir de campos estruturados da GUI (perfil salvo,
-/// formulário de lançamento customizado), use `run_sandbox` — ela não
-/// re-tokeniza nada, então path/executável com espaço nunca quebra.
+/// Executes any Nuk4sd command line directly in memory via C core.
 pub fn exec_cli_cmd(cmd_line: &str) -> (i32, String) {
     let mut args: Vec<String> = vec!["Nuk4sd".to_string()];
     args.extend(cmd_line.split_whitespace().map(|s| s.to_string()));
@@ -512,10 +1057,10 @@ pub fn exec_cli_cmd(cmd_line: &str) -> (i32, String) {
         vault_cli_parse_and_exec(c_ptrs.len() as c_int, c_ptrs.as_ptr())
     };
 
-    (exit_code, format!("Comando executado: {} (retorno: {})", cmd_line, exit_code))
+    (exit_code, format!("Command executed: {} (return code: {})", cmd_line, exit_code))
 }
 
-/// Callback C -> Rust para cópia segura de arquivos
+/// C -> Rust callback for safe file copying
 #[no_mangle]
 pub extern "C" fn rust_vault_copy_file(src: *const c_char, dst: *const c_char) -> c_int {
     if src.is_null() || dst.is_null() {
@@ -535,3 +1080,42 @@ pub extern "C" fn rust_vault_copy_file(src: *const c_char, dst: *const c_char) -
     }
 }
 
+#[no_mangle]
+pub extern "C" fn rust_generate_mac_secret(out_buffer: *mut c_char, buffer_size: usize) -> c_int {
+    if out_buffer.is_null() || buffer_size == 0 {
+        return -1;
+    }
+    
+    match crypto::generate_mac_secret() {
+        Ok(phrase) => {
+            let c_str = match CString::new(phrase) {
+                Ok(s) => s,
+                Err(_) => return -1,
+            };
+            
+            let bytes = c_str.as_bytes_with_nul();
+            if bytes.len() > buffer_size {
+                return -1;
+            }
+            
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, bytes.len());
+            }
+            0 // success
+        }
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rust_validate_mac_secret(phrase_ptr: *const c_char) -> c_int {
+    if phrase_ptr.is_null() {
+        return 0; // false
+    }
+    let phrase = unsafe { CStr::from_ptr(phrase_ptr) }.to_string_lossy();
+    if crypto::validate_mac_secret(&phrase) {
+        1 // true
+    } else {
+        0 // false
+    }
+}

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::io::IsTerminal;
 
-/// Calcula a distância de Levenshtein entre duas strings para fuzzy matching.
+/// Computes Levenshtein distance between two strings for fuzzy matching.
 #[allow(dead_code)]
 fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     let s1_chars: Vec<char> = s1.chars().collect();
@@ -32,8 +32,8 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     dp[m][n]
 }
 
-/// Tenta encontrar um caminho similar se o original não existir.
-/// Agora com tratamento de erros mais robusto e mensagens informativas.
+/// Attempts to find a similar path if the original path does not exist.
+/// Features robust error handling and informative messages.
 #[allow(dead_code)]
 pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
     let path = PathBuf::from(input);
@@ -45,23 +45,23 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
     if std::env::args().len() > 1 {
         eprintln!(
             "{}",
-            format!("✖ O caminho '{}' não foi encontrado.", input).yellow()
+            format!("✖ Path '{}' was not found.", input).yellow()
         );
         return None;
     }
 
     println!(
         "{}",
-        format!("⚠ O caminho '{}' não foi encontrado.", input).yellow()
+        format!("⚠ Path '{}' was not found.", input).yellow()
     );
 
-    // Buscar sugestões no diretório pai ou atual
+    // Search for suggestions in parent or current directory
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
 
-    // Tratamento de erro explícito ao ler diretório
+    // Explicit error handling when reading directory
     let entries = match fs::read_dir(parent) {
         Ok(e) => e,
         Err(e) => {
@@ -84,7 +84,7 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
         None => {
             eprintln!(
                 "{}",
-                "✖ Não foi possível extrair o nome do arquivo/diretório do caminho fornecido."
+                "✖ Failed to extract file/directory name from provided path."
                     .red()
             );
             return None;
@@ -94,7 +94,7 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
     for entry in entries.flatten() {
         let entry_path = entry.path();
 
-        // Filtro robusto por tipo (diretório ou arquivo)
+        // Robust filter by type (directory or file)
         if is_dir && !entry_path.is_dir() {
             continue;
         }
@@ -104,7 +104,7 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
 
         if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
             let dist = levenshtein_distance(target_name, name);
-            // Lógica de sugestão: distância de Levenshtein ou contenção de substring
+            // Suggestion logic: Levenshtein distance or substring containment
             if dist <= 3 || name.contains(target_name) || target_name.contains(name) {
                 suggestions.push(entry_path);
             }
@@ -112,35 +112,35 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
     }
 
     if suggestions.is_empty() {
-        println!("{}", "✖ Nenhuma sugestão próxima encontrada.".red());
+        println!("{}", "✖ No close suggestions found.".red());
         return None;
     }
 
-    // Se houver apenas uma sugestão muito próxima, perguntar de forma amigável
+    // If there is only one close suggestion, ask interactively
     if suggestions.len() == 1 {
         let sug = &suggestions[0];
-        let prompt = format!("Você quis dizer '{}'?", sug.display());
-        let options = vec!["Sim", "Não"];
+        let prompt = format!("Did you mean '{}'?", sug.display());
+        let options = vec!["Yes", "No"];
         let ans = Select::new(&prompt, options).prompt().ok()?;
 
-        if ans == "Sim" {
+        if ans == "Yes" {
             return Some(sug.clone());
         }
     } else {
-        // Se houver várias, deixar escolher interativamente
+        // If multiple suggestions exist, let user choose interactively
         let mut options: Vec<String> = suggestions
             .iter()
             .map(|p| p.display().to_string())
             .collect();
-        options.push("Nenhum destes".to_string());
+        options.push("None of these".to_string());
 
         let ans = Select::new(
-            "Vários caminhos parecidos encontrados. Escolha um:",
+            "Multiple matching paths found. Choose one:",
             options,
         )
         .prompt()
         .ok()?;
-        if ans != "Nenhum destes" {
+        if ans != "None of these" {
             return Some(PathBuf::from(ans));
         }
     }
@@ -148,7 +148,7 @@ pub fn get_valid_path(input: &str, is_dir: bool) -> Option<PathBuf> {
     None
 }
 
-/// Garante que o usuário forneça um caminho válido, seja via argumento ou interativamente.
+/// Ensures the user provides a valid path, either via argument or interactively.
 #[allow(dead_code)]
 pub fn ensure_path(provided: Option<&&str>, prompt: &str, is_dir: bool) -> Option<PathBuf> {
     if let Some(path_str) = provided {
@@ -160,17 +160,17 @@ pub fn ensure_path(provided: Option<&&str>, prompt: &str, is_dir: bool) -> Optio
     if std::env::args().len() > 1 {
         eprintln!(
             "{}",
-            format!("✖ Erro: Caminho não fornecido ou inválido (Modo CLI).").red()
+            format!("✖ Error: Path not provided or invalid (CLI mode).").red()
         );
         return None;
     }
 
-    // Se não foi fornecido ou o fornecido era inválido, tentar o rfd
+    // If not provided or invalid, attempt fallback prompt
     println!("{}", format!("➜ {}", prompt).cyan());
     let input = if std::io::stdin().is_terminal() {
         match inquire::Text::new(prompt).prompt() {
             Ok(text) => text,
-            Err(_) => return None, // Usuário cancelou ou erro no prompt
+            Err(_) => return None, // User cancelled or prompt error
         }
     } else {
         let mut buf = String::new();

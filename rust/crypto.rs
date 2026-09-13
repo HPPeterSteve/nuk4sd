@@ -102,3 +102,63 @@ pub fn derive_master_key(
 
     Ok(master_key)
 }
+
+/// Generates a random phrase with a 12-digit random number, hashes it with Argon2, and saves the hash.
+/// Returns the plaintext phrase so the user can write it down.
+pub fn generate_mac_secret() -> Result<String, Box<dyn std::error::Error>> {
+    // Generate a 12-digit random number
+    let mut random_bytes = [0u8; 8];
+    RandOsRng.fill_bytes(&mut random_bytes);
+    let rand_num = u64::from_le_bytes(random_bytes) % 1_000_000_000_000;
+    
+    // Create the secret phrase without spaces
+    let phrase = format!("Nuk4sdRecovery{:012}", rand_num);
+
+    let salt = SaltString::generate(&mut RandOsRng);
+    let argon2 = Argon2::default();
+    
+    // Hash the phrase using Argon2
+    let hash = argon2.hash_password(phrase.as_bytes(), &salt)
+        .map_err(|e| format!("Argon2 hash failed: {}", e))?;
+    let hash_string = hash.to_string(); // PHC string format (contains salt and hash)
+
+    // Save the hash to the home directory
+    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let secret_path = Path::new(&home_dir).join(".nuk4sd_mac_secret");
+    
+    fs::write(&secret_path, hash_string)?;
+    
+    // Set restrictive permissions (600) on Linux
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(&secret_path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(&secret_path, perms);
+        }
+    }
+
+    Ok(phrase)
+}
+
+/// Validates the provided phrase against the stored Argon2 hash.
+pub fn validate_mac_secret(phrase: &str) -> bool {
+    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let secret_path = Path::new(&home_dir).join(".nuk4sd_mac_secret");
+    
+    let hash_string = match fs::read_to_string(&secret_path) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return false,
+    };
+
+    let parsed_hash = match argon2::PasswordHash::new(&hash_string) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+
+    let argon2 = Argon2::default();
+    use argon2::PasswordVerifier;
+    
+    argon2.verify_password(phrase.as_bytes(), &parsed_hash).is_ok()
+}

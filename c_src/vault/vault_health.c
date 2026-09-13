@@ -3,13 +3,13 @@
  *
  * Nuk4sd — Sandbox Health Inspector
  *
- * Lê /proc/<pid>/ para verificar se um processo sandboxed está
- * de fato isolado. Emite JSON para a GUI consumir.
+ * Reads /proc/<pid>/ to verify whether a sandboxed process is
+ * actually isolated. Outputs JSON for GUI consumption.
  *
- * Uso via CLI:
+ * CLI Usage:
  *   Nuk4sd --health <pid>
  *
- * Saída (stdout, JSON):
+ * Output (stdout, JSON):
  * {
  *   "pid": 12345,
  *   "exe": "/usr/bin/firefox",
@@ -28,7 +28,7 @@
  *   "issues": []
  * }
  *
- * verdict pode ser: "isolated" | "partial" | "exposed"
+ * verdict can be: "isolated" | "partial" | "exposed"
  */
 
 #define _GNU_SOURCE
@@ -44,7 +44,7 @@
 
 #include "vault_health.h"
 
-/* ── Lê um campo do /proc/<pid>/status ───────────────────────────────────── */
+/* ── Reads a field from /proc/<pid>/status ───────────────────────────────────── */
 static int read_status_field(pid_t pid, const char *field, char *out, size_t outsz)
 {
     char path[256];
@@ -72,7 +72,7 @@ static int read_status_field(pid_t pid, const char *field, char *out, size_t out
     return -1;
 }
 
-/* ── Lê o inode do namespace de /proc/<pid>/ns/<ns_name> ─────────────────── */
+/* ── Reads namespace inode from /proc/<pid>/ns/<ns_name> ─────────────────── */
 static ino_t read_ns_inode(pid_t pid, const char *ns)
 {
     char path[256];
@@ -82,7 +82,7 @@ static ino_t read_ns_inode(pid_t pid, const char *ns)
     return st.st_ino;
 }
 
-/* ── Lê /proc/<pid>/exe via readlink ─────────────────────────────────────── */
+/* ── Reads /proc/<pid>/exe via readlink ─────────────────────────────────────── */
 static void read_exe(pid_t pid, char *out, size_t outsz)
 {
     char path[64];
@@ -92,7 +92,7 @@ static void read_exe(pid_t pid, char *out, size_t outsz)
     else snprintf(out, outsz, "(unknown)");
 }
 
-/* ── Escapa string simples para JSON ─────────────────────────────────────── */
+/* ── Escapes simple string for JSON ─────────────────────────────────────── */
 static void json_str(FILE *out, const char *s)
 {
     fputc('"', out);
@@ -105,10 +105,10 @@ static void json_str(FILE *out, const char *s)
     fputc('"', out);
 }
 
-/* ── Ponto de entrada público ─────────────────────────────────────────────── */
+/* ── Public entry point ─────────────────────────────────────────────── */
 int sandbox_health_check(pid_t pid)
 {
-    /* Verificar se o pid existe */
+    /* Verify pid exists */
     char proc_path[64];
     snprintf(proc_path, sizeof(proc_path), "/proc/%d", (int)pid);
     struct stat st;
@@ -117,7 +117,7 @@ int sandbox_health_check(pid_t pid)
         return 1;
     }
 
-    /* ── Ler campos do /proc/<pid>/status ── */
+    /* ── Read fields from /proc/<pid>/status ── */
     char caps_eff[32]  = "?";
     char nnp_str[8]    = "?";
     char seccomp_str[8] = "?";
@@ -138,13 +138,13 @@ int sandbox_health_check(pid_t pid)
         default: seccomp_label = "unknown";   break;
     }
 
-    /* ── Comparar namespaces com o processo init (pid 1) ── */
+    /* ── Compare namespaces with init process (pid 1) ── */
     const char *ns_names[] = { "user", "mnt", "net", "pid", "ipc", "uts", NULL };
     bool ns_isolated[6] = {false};
     for (int i = 0; ns_names[i]; i++) {
         ino_t self_ino = read_ns_inode(1,   ns_names[i]);
         ino_t proc_ino = read_ns_inode(pid, ns_names[i]);
-        /* Se o inode for diferente do PID 1, está em namespace próprio */
+        /* If inode differs from PID 1, process is in dedicated namespace */
         ns_isolated[i] = (self_ino != 0 && proc_ino != 0 && self_ino != proc_ino);
     }
     bool ns_user = ns_isolated[0];
@@ -154,11 +154,11 @@ int sandbox_health_check(pid_t pid)
     bool ns_ipc  = ns_isolated[4];
     bool ns_uts  = ns_isolated[5];
 
-    /* ── Ler executável ── */
+    /* ── Read executable ── */
     char exe[PATH_MAX] = "";
     read_exe(pid, exe, sizeof(exe));
 
-    /* ── Construir lista de issues ── */
+    /* ── Construct issues list ── */
     const char *issues[16];
     int n_issues = 0;
 
@@ -170,9 +170,9 @@ int sandbox_health_check(pid_t pid)
     if (!ns_net)                issues[n_issues++] = "no network namespace — full host network access";
     if (!ns_pid)                issues[n_issues++] = "no PID namespace — can see all host processes";
 
-    /* ── Veredicto ── */
+    /* ── Verdict ── */
     const char *verdict;
-    /* Critérios mínimos para "isolated": caps, NNP, seccomp, mnt, user */
+    /* Minimum criteria for "isolated": caps, NNP, seccomp, mnt, user */
     int score = (caps_dropped ? 1 : 0) + (no_new_privs ? 1 : 0)
               + (seccomp_val > 0 ? 1 : 0) + (ns_mnt ? 1 : 0)
               + (ns_user ? 1 : 0) + (ns_net ? 1 : 0);
@@ -181,7 +181,7 @@ int sandbox_health_check(pid_t pid)
     else if (score >= 3) verdict = "partial";
     else                 verdict = "exposed";
 
-    /* ── Emitir JSON ── */
+    /* ── Output JSON ── */
     printf("{\n");
     printf("  \"pid\": %d,\n", (int)pid);
     printf("  \"exe\": "); json_str(stdout, exe); printf(",\n");

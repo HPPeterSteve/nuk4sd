@@ -2,7 +2,7 @@
  * userns.c
  *
  * Nuk4sd — Hardened Sandbox — Layer 1+3: User Namespace + Pivot Root
- * Extraído de vault_sandbox.c 
+ * Extracted from vault_sandbox.c 
  */
 
 #include "sandbox.h"
@@ -109,7 +109,7 @@ static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
     bool uid_ok = false;
     bool gid_ok = false;
 
-    /* setgroups deny — precisa vir ANTES de gid_map em kernels que exigem isso */
+    /* setgroups deny — must come BEFORE gid_map in kernels requiring it */
     snprintf(path, sizeof(path), "/proc/%d/setgroups", (int)child_pid);
     fd = open(path, O_WRONLY);
     if (fd < 0)
@@ -144,7 +144,7 @@ static int sandbox_write_uid_gid_map(pid_t child_pid, uid_t ruid, gid_t rgid)
         close(fd);
     }
 
-    /* gid_map: mesma lógica, identidade "rgid -> rgid". */
+    /* gid_map: same logic, identity "rgid -> rgid". */
     snprintf(path, sizeof(path), "/proc/%d/gid_map", (int)child_pid);
     map_len = snprintf(map, sizeof(map), "%d %d 1\n", (int)rgid, (int)rgid);
 

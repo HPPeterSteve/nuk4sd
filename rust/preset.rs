@@ -1,31 +1,32 @@
-//! preset.rs — Reescrita em Rust do preset.c
+//! preset.rs — Rust rewrite of preset.c
 //!
-//! Expõe `preflight_scan()` via FFI para o C (vault_cli.c) chamar
-//! exatamente como antes: `void preflight_scan(CliConfig *cfg, const char *exec_path)`
+//! Exposes `preflight_scan()` via FFI for C (vault_cli.c) to call
+//! exactly as before: `void preflight_scan(CliConfig *cfg, const char *exec_path)`
 //!
-//! Vantagens sobre o preset.c:
-//!   - Sem buffer overflow: Strings são `Vec<u8>` / `String` com crescimento dinâmico
-//!   - Sem estático mutável não thread-safe: ldd_out era `static char[256KB]`
-//!   - Sem strncpy truncado silencioso
-//!   - run_cmd_with_timeout reimplementado com Command + thread + channel (sem fork manual)
-//!   - realpath() aplicado em todos os paths antes de entrar no cfg->binds
-//!   - which_in_path(): busca nativa em $PATH, sem depender de /usr/bin/which existir no host
+//! Key benefits over preset.c:
+//!   - No buffer overflows: Strings use dynamically growing `Vec<u8>` / `String`
+//!   - No non-thread-safe mutable statics: ldd_out was `static char[256KB]`
+//!   - No silent truncated strncpy
+//!   - run_cmd_with_timeout re-implemented with Command + thread + channel (no manual fork)
+//!   - realpath() applied to all paths before inserting into cfg->binds
+//!   - which_in_path(): native $PATH search without depending on host /usr/bin/which
 //!
-//! Para integrar:
-//!   1. Adiciona este arquivo em src/preset.rs
-//!   2. Em build.rs, remove a compilação de c_src/preset.c
-//!   3. Declara o módulo em src/lib.rs ou src/main.rs:
+//! Integration:
+//!   1. Place this file at src/preset.rs
+//!   2. In build.rs, remove c_src/preset.c from build step
+//!   3. Declare module in src/lib.rs or src/main.rs:
 //!        mod preset;
 //!        pub use preset::preflight_scan;
 //!
-//! O C continua chamando via:
+//! C invocation signature remains:
 //!   extern void preflight_scan(CliConfig *cfg, const char *exec_path);
 
 #![allow(non_snake_case, dead_code)]
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::io::Read;
 use std::os::raw::{c_char, c_int};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -33,13 +34,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-// ─── Constantes espelhadas do preset.h ────────────────────────────────────────
+// ─── Constants mirrored from preset.h ────────────────────────────────────────
 
 const VAULT_PATH_MAX: usize = 4096;
 const MAX_BINDS: usize = 64;
 const RUN_TIMEOUT_MS: u64 = 3000;
 
-// ─── Tipos espelhados do preset.h ─────────────────────────────────────────────
+// ─── Types mirrored from preset.h ─────────────────────────────────────────────
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -55,8 +56,8 @@ pub struct BindEntry {
     pub bind_type: BindType,
 }
 
-/// Espelho exato de CliConfig em preset.h.
-/// IMPORTANTE: o layout em memória deve ser idêntico ao C — não reordene campos.
+/// Exact mirror of CliConfig in preset.h.
+/// IMPORTANT: Memory layout must match C exactly — do not reorder fields.
 #[repr(C)]
 pub struct CliConfig {
     pub vault_id: i32,
@@ -69,6 +70,14 @@ pub struct CliConfig {
     pub op_export: bool, pub op_rm: bool, pub op_unlock: bool,
     pub op_passwd: bool, pub op_rule: bool, pub op_worm_status: bool,
     pub op_help: bool, pub op_version: bool, pub op_rename: bool,
+
+    // Container Whitelist
+    pub op_whitelist_exclude: bool,
+    pub op_whitelist_restore: bool,
+
+    // OCI Image
+    pub image_url: *mut c_char,
+    pub image_url_allocated: bool,
 
     pub export_file: *mut c_char,
     pub export_dest: *mut c_char,
@@ -117,6 +126,7 @@ pub struct CliConfig {
     pub iso_gpu: bool,
     pub iso_xdg_runtime: bool,
     pub iso_dev_level: c_int,
+    pub iso_mount_dev: bool,
     pub iso_no_seccomp: bool,
     pub iso_use_chroot: bool,
     pub iso_display: *mut c_char,
@@ -126,6 +136,20 @@ pub struct CliConfig {
     pub allow_clone3: bool,
     pub friendly_sandbox: bool,
     pub permissive_sandbox: bool,
+    pub skip_preflight: bool,
+    pub no_fuse: bool,
+
+    // network & firewall
+    pub iso_net_veth: bool,
+    pub iso_net_veth_ip: *mut c_char,
+    pub iso_net_veth_gw: *mut c_char,
+    pub iso_nfilter: bool,
+    pub iso_nfilter_jail: *mut c_char,
+
+    // uuid supervision & init
+    pub iso_uuid: bool,
+    pub iso_init: bool,
+    pub iso_adapter: *mut c_char,
 
     // resource limits
     pub iso_max_procs: c_int,
@@ -134,12 +158,81 @@ pub struct CliConfig {
     pub iso_max_fds: c_int,
     pub iso_tmp_size_mb: c_int,
 
+    // cgroups v1/v2
+    pub iso_cgroup: bool,
+    pub iso_unshare_cgroup: bool,
+    pub iso_cgroup_name: *mut c_char,
+    pub iso_cpu_shares: c_int,
+    pub iso_cpu_quota_us: c_int,
+    pub iso_cgroup_mem_mb: c_int,
+
+    // extended vault file operations (Block 1)
+    pub op_add: bool,
+    pub add_file: *mut c_char,
+    pub add_recursive: bool,
+    pub add_replace: bool,
+    pub add_preserve: bool,
+
+    pub op_extract: bool,
+    pub extract_file: *mut c_char,
+    pub extract_dest: *mut c_char,
+    pub extract_force: bool,
+
+    pub op_mv: bool,
+    pub mv_src: *mut c_char,
+    pub mv_dest: *mut c_char,
+
+    pub op_cp: bool,
+    pub cp_src: *mut c_char,
+    pub cp_dest: *mut c_char,
+
+    pub op_rm_file: bool,
+    pub rm_file_target: *mut c_char,
+
+    pub op_mkdir: bool,
+    pub mkdir_target: *mut c_char,
+
+    pub op_rmdir: bool,
+    pub rmdir_target: *mut c_char,
+
+    pub op_tree: bool,
+    pub op_du: bool,
+
+    pub op_find: bool,
+    pub find_pattern: *mut c_char,
+
+    // snapshots (Block 3)
+    pub op_snapshot: bool,
+    pub snapshot_tag: *mut c_char,
+
+    pub op_snapshots: bool,
+
+    pub op_snapshot_delete: bool,
+    pub snapshot_del_tag: *mut c_char,
+
+    pub op_snapshot_restore: bool,
+    pub snapshot_restore_tag: *mut c_char,
+
+    pub op_snapshot_diff: bool,
+    pub snapshot_diff_tag1: *mut c_char,
+    pub snapshot_diff_tag2: *mut c_char,
+
     pub binds: [BindEntry; MAX_BINDS],
     pub bind_count: c_int,
 
     pub verbose: bool,
     pub json_output: bool,
     pub password: *mut c_char,
+
+    // MAC AppArmor control (mirror of preset.h MAC section)
+    // IMPORTANT: field order must match C struct exactly.
+    pub op_app_armor: bool,          // --app-armor parsed
+    pub app_armor_target: *mut c_char, // "all" or "vault-<id>"
+    pub op_mac_enable: bool,         // --mac-enable
+    pub op_disable_apparmor: bool,   // --disable-apparmor
+    pub op_mac_status: bool,         // --mac-status
+    pub op_generate_secret: bool,    // --generate-secret
+    pub vault_export_dest: *mut c_char, // destination for --mount-export
 }
 
 
@@ -172,7 +265,7 @@ fn run_cmd_with_timeout(program: &str, args: &[&str]) -> Option<String> {
             let _ = child.kill();
             let _ = child.wait();
             eprintln!(
-                "[PREFLIGHT SCAN] ldd timeout ({}ms) — FUSE pode estar stale; pulando scan de libs",
+                "[PREFLIGHT SCAN] ldd timeout ({}ms) — FUSE might be stale; skipping library scan",
                 RUN_TIMEOUT_MS
             );
             None
@@ -180,19 +273,16 @@ fn run_cmd_with_timeout(program: &str, args: &[&str]) -> Option<String> {
     }
 }
 
-// ─── which_in_path — busca nativa em $PATH ────────────────────────────────────
+// ─── which_in_path — native $PATH search ──────────────────────────────────────
 //
-// Substitui o shell-out pra `/usr/bin/which`. Três motivos:
-//   1. `/usr/bin/which` não existe em todo host (Alpine, imagens mínimas,
-//      NixOS sem coreutils extra) — a versão anterior falhava mesmo quando
-//      o binário procurado existia normalmente no $PATH.
-//   2. Evita spawnar processo + thread + channel + timeout de 3s só pra
-//      resolver um path — isso é uma lookup pura, resolve em microssegundos
-//      lendo $PATH diretamente.
-//   3. Retorna o PRIMEIRO caminho executável de verdade (checa o bit +x via
-//      permissions().mode(), não só a existência do arquivo) — o `which`
-//      do sistema às vezes aponta pra symlink quebrado ou arquivo sem
-//      permissão de execução, e o execvp() subsequente rejeitaria mesmo assim.
+// Replaces shell-out to `/usr/bin/which`. Reasons:
+//   1. `/usr/bin/which` does not exist on all hosts (Alpine, minimal images,
+//      NixOS without extra coreutils) — previous version failed even when
+//      target binary existed normally in $PATH.
+//   2. Avoids spawning process + thread + channel + 3s timeout just to resolve
+//      a path — this is a pure lookup, resolves in microseconds reading $PATH directly.
+//   3. Returns the FIRST actual executable path (checks +x bit via
+//      permissions().mode(), not just file existence).
 fn which_in_path(name: &str) -> Option<PathBuf> {
     if name.contains('/') {
         let p = Path::new(name);
@@ -211,12 +301,15 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
 
 fn is_executable_file(p: &Path) -> bool {
     match std::fs::metadata(p) {
+        #[cfg(unix)]
         Ok(m) => m.is_file() && (m.permissions().mode() & 0o111 != 0),
+        #[cfg(not(unix))]
+        Ok(m) => m.is_file(),
         Err(_) => false,
     }
 }
 
-// ─── Análise de saída do ldd ──────────────────────────────────────────────────
+// ─── ldd Output Analysis ──────────────────────────────────────────────────
 
 
 #[derive(Debug, Default)]
@@ -299,7 +392,7 @@ pub fn analyze_ldd(ldd_output: &str) -> RuntimeProfile {
             p.audio = true;
         }
 
-        // Rede
+        // Network
         if contains_any(&l, &[
             "libcurl",
             "libssl",
@@ -338,7 +431,7 @@ pub fn analyze_ldd(ldd_output: &str) -> RuntimeProfile {
             p.bluetooth = true;
         }
 
-        // Impressão
+        // Printer
         if l.contains("libcups") {
             p.printer = true;
         }
@@ -364,7 +457,7 @@ fn contains_any(line: &str, patterns: &[&str]) -> bool {
     patterns.iter().any(|p| line.contains(p))
 }
 
-// ─── Heurística por nome ──────────────────────────────────────────────────────
+// ─── Name-based Heuristics ─────────────────────────────────────────────────
 
 fn apply_heuristic_by_name(path: &str, p: &mut RuntimeProfile) {
     let known = ["firefox", "libreoffice", "chrome", "obs", "vlc", "gimp",
@@ -377,7 +470,7 @@ fn apply_heuristic_by_name(path: &str, p: &mut RuntimeProfile) {
     }
 }
 
-// ─── realpath seguro ──────────────────────────────────────────────────────────
+// ─── Safe realpath ──────────────────────────────────────────────────────────
 
 fn safe_realpath(p: &str) -> Option<PathBuf> {
     let path = Path::new(p);
@@ -391,7 +484,7 @@ fn safe_realpath(p: &str) -> Option<PathBuf> {
     }
 }
 
-// ─── Adiciona bind entry ao cfg (com realpath) ────────────────────────────────
+// ─── Add bind entry to cfg (with realpath) ─────────────────────────────────
 
 unsafe fn cfg_add_bind(cfg: &mut CliConfig, path: &str, bind_type: BindType) {
     let count = cfg.bind_count as usize;
@@ -403,7 +496,7 @@ unsafe fn cfg_add_bind(cfg: &mut CliConfig, path: &str, bind_type: BindType) {
         Some(p) => p,
         None => {
             eprintln!(
-                "  ✖ bind rejeitado: path relativo ou inválido '{}' (use path absoluto)",
+                "  bind rejected: relative or invalid path '{}' (use absolute path)",
                 path
             );
             return;
@@ -423,8 +516,8 @@ unsafe fn cfg_add_bind(cfg: &mut CliConfig, path: &str, bind_type: BindType) {
 // ─── FFI entry point ──────────────────────────────────────────────────────────
 
 /// # Safety
-/// `cfg` deve ser um ponteiro válido para CliConfig alocado pelo C.
-/// `exec_path` deve ser uma string C válida terminada em '\0'.
+/// `cfg` must be a valid pointer to CliConfig allocated by C.
+/// `exec_path` must be a valid null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn preflight_scan(cfg: *mut CliConfig, exec_path: *const c_char) {
     if cfg.is_null() || exec_path.is_null() {
@@ -438,13 +531,13 @@ pub unsafe extern "C" fn preflight_scan(cfg: *mut CliConfig, exec_path: *const c
         Err(_) => return,
     };
 
-    // ── Valida o executável com metadata() (equiv. a stat()) ──────────────
+    // ── Validate executable with metadata() (equiv. to stat()) ──────────────
     if exec_str.starts_with('/') || exec_str.starts_with('.') {
         match std::fs::metadata(exec_str) {
             Ok(m) if m.is_file() => {}
             _ => {
                 eprintln!(
-                    "[PREFLIGHT SCAN] '{}' não encontrado ou não é binário — pulando",
+                    "[PREFLIGHT SCAN] '{}' not found or is not a binary — skipping",
                     exec_str
                 );
                 return;
@@ -452,7 +545,7 @@ pub unsafe extern "C" fn preflight_scan(cfg: *mut CliConfig, exec_path: *const c
         }
     }
 
-    // ── Resolve caminho absoluto (busca nativa em $PATH, sem shell-out) ───
+    // ── Resolve absolute path (native $PATH lookup, no shell-out) ───
     let full_exec_path: String = if exec_str.starts_with('/') || exec_str.starts_with('.') {
         exec_str.to_string()
     } else {
@@ -460,7 +553,7 @@ pub unsafe extern "C" fn preflight_scan(cfg: *mut CliConfig, exec_path: *const c
             Some(p) => p.to_string_lossy().into_owned(),
             None => {
                 eprintln!(
-                    "[PREFLIGHT SCAN] não foi possível resolver '{}' no $PATH — pulando",
+                    "[PREFLIGHT SCAN] unable to resolve '{}' in $PATH — skipping",
                     exec_str
                 );
                 return;
@@ -469,28 +562,28 @@ pub unsafe extern "C" fn preflight_scan(cfg: *mut CliConfig, exec_path: *const c
     };
 
     if full_exec_path.is_empty() {
-        eprintln!("[PREFLIGHT SCAN] path vazio após resolução — pulando");
+        eprintln!("[PREFLIGHT SCAN] empty path after resolution — skipping");
         return;
     }
 
-    // ── Executa ldd com timeout ───────────────────────────────────────────
+    // ── Execute ldd with timeout ───────────────────────────────────────────
     let ldd_output = run_cmd_with_timeout("/usr/bin/ldd", &[&full_exec_path])
         .unwrap_or_default();
 
-    // ── Analisa dependências ──────────────────────────────────────────────
+    // ── Analyze dependencies ──────────────────────────────────────────────
     let mut deps = analyze_ldd(&ldd_output);
 
     if !deps.gui {
         apply_heuristic_by_name(&full_exec_path, &mut deps);
     }
 
-    // ── Relatório ─────────────────────────────────────────────────────────
-    eprintln!("[PREFLIGHT SCAN] Analisando '{}'...", full_exec_path);
+    // ── Report ─────────────────────────────────────────────────────────
+    eprintln!("[PREFLIGHT SCAN] Analyzing '{}'...", full_exec_path);
 
     let has_preset = !cfg.iso_preset.is_null();
 
     if deps.gui && !has_preset {
-        eprintln!("  ✓ Detectado GTK/Qt/GUI (configurando X11, Wayland, ícones)");
+        eprintln!("  ✓ Detected GTK/Qt/GUI (configuring X11, Wayland, icons)");
         if !cfg.iso_wayland && !cfg.iso_x11 {
             cfg.iso_wayland = true;
             cfg.iso_x11     = true;
@@ -500,22 +593,22 @@ pub unsafe extern "C" fn preflight_scan(cfg: *mut CliConfig, exec_path: *const c
     }
 
     if deps.gpu && !has_preset {
-        eprintln!("  ✓ Detectado uso de GPU (montando /dev/dri)");
+        eprintln!("  ✓ Detected GPU usage (mounting /dev/dri)");
         cfg.iso_gpu = true;
     } else if !deps.gpu && cfg.verbose {
-        eprintln!("  ⚠ GPU não detectada");
+        eprintln!("  ⚠ GPU not detected");
     }
 
     if deps.audio && !has_preset {
-        eprintln!("  ✓ Detectado Áudio (montando PulseAudio/PipeWire)");
+        eprintln!("  ✓ Detected Audio (mounting PulseAudio/PipeWire)");
         cfg.iso_audio = true;
     }
 
     if deps.network && cfg.iso_no_net && !has_preset {
-        eprintln!("  ⚠ Atenção: Binário usa rede, mas iso_no_net está ativo.");
+        eprintln!("  ⚠ Warning: Binary uses network, but iso_no_net is enabled.");
     }
 
-    // ── Empréstimo automático de binário externo ──────────────────────────
+    // ── Automatic external binary lending ──────────────────────────
     let is_system_path = full_exec_path.starts_with("/usr/")
         || full_exec_path.starts_with("/bin/")
         || full_exec_path.starts_with("/lib")
@@ -529,12 +622,9 @@ pub unsafe extern "C" fn preflight_scan(cfg: *mut CliConfig, exec_path: *const c
         || full_exec_path.starts_with("/usr/local/sbin/");
 
     if !is_system_path {
-        eprintln!("  ✓ Empréstimo de binário externo ativado: {}", full_exec_path);
+        eprintln!("  ✓ External binary lending enabled: {}", full_exec_path);
         cfg_add_bind(cfg, &full_exec_path, BindType::BindRo);
     }
 
-    eprintln!("[LANCANDO SANDBOX...]");
+    eprintln!("[LAUNCHING SANDBOX...]");
 }
-
-// ─── Testes ───────────────────────────────────────────────────────────────────
-

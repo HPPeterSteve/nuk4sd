@@ -1,85 +1,89 @@
-# Nuk4sd v0.9.30 — Release Notes (Planejado)
+# Nuk4sd v0.9.30 — Release Notes (Planned)
 
-**Data:** Em planejamento  
+**Date:** In planning  
 **Branch:** main  
-**Tipo:** Debug / Stability release
+**Type:** Debug / Stability release
 
 ---
 
-## Visão Geral
+## Overview
 
-Versão de estabilização após debug completo do ciclo 0.9.30. Foco em cobertura de testes de regressão, hardening do container runtime e validação de todos os vetores de escape antes de release público.
-
----
-
-## Em Planejamento
-
-- [ ] Testes de regressão completos pós-refactor do `c_src/`
-- [ ] Validação dos novos módulos `container/` e `sandbox/` contra vetores de escape conhecidos
-- [ ] Hardening do `oci.rs` (limites de layers, validação de digest)
-- [ ] Revisão de performance do `vault/` após reorganização modular
+Stabilization release following full debugging of the 0.9.30 cycle. Focus on regression test coverage, container runtime hardening, and validation of all escape vectors prior to public release.
 
 ---
 
+## In Planning
+
+- [ ] Complete regression testing post `c_src/` refactor
+- [ ] Validation of new `container/` and `sandbox/` modules against known escape vectors
+- [ ] Hardening of `oci.rs` (layer limits, digest validation)
+- [ ] Performance review of `vault/` following modular reorganization
+
 ---
 
-# Nuk4sd v0.9.30 — Release Notes (Em Desenvolvimento)
+---
 
-**Data:** 12 de agosto de 2026  
+# Nuk4sd v0.9.30 — Release Notes (In Development)
+
+**Date:** August 12, 2026  
 **Branch:** main  
-**Tipo:** Refactor + Feature release
+**Type:** Refactor + Feature release
 
 ---
 
-## Visão Geral
+## Overview
 
-A versão 0.9.30 representa uma reorganização profunda da estrutura de código C, migrando de arquivos monolíticos para uma arquitetura modular por responsabilidade. Introduz o módulo `oci.rs` para integração com o runtime OCI e adiciona suporte a containers com overlay filesystem.
+Version 0.9.30 represents a deep reorganization of the C codebase structure, migrating from monolithic files to a modular architecture organized by responsibility. It introduces the `oci.rs` module for integration with the OCI container runtime and adds support for containers with overlay filesystems.
 
 ---
 
-## Mudanças Principais
+## Key Changes
 
-### Refactor: Estrutura Modular do `c_src/`
+### Refactor: Modular Structure of `c_src/`
 
-Os arquivos C que antes viviam soltos na raiz de `c_src/` foram reorganizados em módulos por responsabilidade:
+C source files that previously resided flat in `c_src/` have been reorganized into modules by responsibility:
 
-| Módulo | Conteúdo |
+| Module | Contents |
 |---|---|
 | `c_src/sandbox/` | `jail.c`, `caps.c`, `seccomp.c`, `userns.c`, `mounts.c`, `rlimits.c`, `landlock.c` |
 | `c_src/vault/` | `vault_core.h`, `vault_engine.c`, `vault_crypto.c`, `vault_catalog.c`, `vault_ffi.c`, `vault_fuse.c`, `vault_health.c`, `vault_monitor.c` |
 | `c_src/cli/` | `vault_cli.c`, `vault_cli_log.c`, `vault_cli_log.h` |
 | `c_src/container/` | `container.c`, `container.h`, `overlay.c`, `overlay.h` |
 
-### Nova feature: `rust/oci.rs`
+### New Feature: `rust/oci.rs`
 
-Integração com o runtime OCI (Open Container Initiative):
-- Pull e extração de imagens OCI via `reqwest` + `tar` + `flate2`
-- Suporte a overlayfs para camadas de container
-- Compatível com registries padrão (Docker Hub, GHCR)
+Integration with the OCI (Open Container Initiative) runtime:
+- Pull and extraction of OCI images via `reqwest` + `tar` + `flate2`
+- Support for overlayfs container layers
+- Compatible with standard registries (Docker Hub, GHCR)
 
-### Atualização: `rust/ffi.rs` e `rust/main.rs`
+### New Feature: Synthetic /dev (--mount-dev)
 
-Bindings FFI atualizados para refletir o novo layout modular do `c_src/`, com includes apontando para as novas subpastas.
+Introduced full hardware device isolation. Instead of inheriting (bind-mounting) the host `/dev`, the sandbox now creates a synthetic in-memory `/dev` (`tmpfs`) containing strictly essential nodes (`null`, `zero`, `random`, `urandom`, `tty`, `console`) and dedicated pseudoterminals under `/dev/pts`. This eliminates any host hardware exposure to the isolated process.
 
-### Scripts de Teste
+### Update: `rust/ffi.rs` and `rust/main.rs`
 
-- Adicionado `sandbox_check.sh` — verificação rápida de integridade do sandbox
-- Atualizado `sandbox_mass_test.sh` — testes em massa de vetores de escape
+FFI bindings updated to reflect the new modular layout of `c_src/`, with includes pointing to the new subdirectories.
+
+### Test Scripts
+
+- Added `sandbox_check.sh` — fast sandbox integrity verification script
+- Updated `sandbox_mass_test.sh` — mass testing suite for escape vectors
 
 ---
 
-## Arquivos Modificados Nesta Versão
+## Modified Files in This Release
 
-- `c_src/sandbox/` — módulo de isolamento (migrado de flat)
-- `c_src/vault/` — módulo de vault (migrado de flat)
-- `c_src/cli/` — módulo de CLI (migrado de flat)
-- `c_src/container/` — novo módulo de container com overlay
-- `rust/oci.rs` — novo: runtime OCI
-- `rust/ffi.rs` — atualizado: bindings para novo layout
-- `rust/main.rs` — atualizado: integrações
-- `build.rs` — atualizado: paths de compilação para nova estrutura
-- `Cargo.toml` — versão 0.9.30
-- `examples/` — novo: exemplos de uso
+- `c_src/sandbox/` — isolation module (migrated from flat)
+- `c_src/vault/` — vault module (migrated from flat)
+- `c_src/cli/` — CLI module (migrated from flat)
+- `c_src/container/` — new overlay container module
+- `rust/oci.rs` — new: OCI runtime
+- `rust/ffi.rs` — updated: bindings for new layout
+- `rust/main.rs` — updated: integrations
+- `build.rs` — updated: build paths for new structure
+- `Cargo.toml` — version 0.9.30
+- `examples/` — new: usage examples
 
 ---
 
@@ -87,142 +91,142 @@ Bindings FFI atualizados para refletir o novo layout modular do `c_src/`, com in
 
 # Nuk4sd v0.9.28 — Release Notes
 
-**Data:** 31 de julho de 2026
+**Date:** July 31, 2026
 **Branch:** main
-**Tipo:** Bugfix + Security + Feature release
+**Type:** Bugfix + Security + Feature release
 
 ---
 
-## Visão Geral
+## Overview
 
-A versão 0.9.28 representa uma revisão profunda da camada de isolamento do sandbox, resolvendo vulnerabilidades de vazamento de namespace, problemas críticos de execução de aplicações gráficas e refinamentos na interface nativa em Rust. O projeto permanece sem dependência de root/sudo para criação de sandboxes funcionais, operando em paridade técnica com o Bubblewrap (bwrap), motor do Flatpak.
-
----
-
-## Vulnerabilidades Corrigidas
-
-### [SEC-01] Vazamento de PIDs do Host via /proc (Severidade: Média)
-
-O sandbox montava `/proc` do host via bind-mount herdado antes do `pivot_root`, e o remount pós-pivot falhava silenciosamente porque o mountpoint já estava ocupado. O resultado era que processos dentro do sandbox conseguiam enumerar PIDs reais do host através de `/proc`, violando o isolamento do PID namespace.
-
-**Impacto:** Um processo malicioso dentro do sandbox poderia observar quais processos estão rodando no host, inferir cargas de trabalho, temporizações e potencialmente usar `/proc/<pid>/fd` como canal de leitura se houvesse descritores de arquivo abertos acessíveis.
-
-**Correção:** Implementada sequência de três etapas robusta antes de montar o `/proc` fresco: (1) `umount2(MNT_DETACH)` para desacoplar o procfs herdado de forma lazy sem bloquear em file descriptors abertos; (2) criação do mountpoint com verificação de `EEXIST`; (3) montagem de um novo procfs scoped ao PID namespace do sandbox com `MS_NOSUID | MS_NOEXEC | MS_NODEV`. Cada etapa tem logging estruturado via `vault_log()` e a falha do mount registra `LOG_ERROR` no audit log em vez de silenciar o erro com `perror()`.
-
-### [SEC-02] RLIMIT_AS Quebrando Alocadores 64-bit em Modo GUI (Severidade: Alta)
-
-O sandbox impunha por padrão um limite rígido de espaço de endereçamento virtual (`RLIMIT_AS`) de 4 a 8 GB para todos os modos. Alocadores modernos de 64 bits — especialmente o JIT SpiderMonkey do Firefox e o V8 do Chromium — fazem `mmap()` de regiões de memória virtual muito maiores que a RAM física usada (técnica de reserva antecipada de espaço de endereçamento). Com o limite ativo, o kernel retornava `ENOMEM` nas chamadas de `mmap()` durante a inicialização, resultando em falha silenciosa do processo antes de qualquer renderização.
-
-**Impacto:** Todas as aplicações gráficas modernas baseadas em Electron, Firefox ou Chromium falhavam ao iniciar dentro do sandbox com código de saída 11 (SIGSEGV por acesso a endereço não mapeado).
-
-**Correção:** `RLIMIT_AS` removido dos defaults automáticos. O limite só é aplicado quando o usuário especifica explicitamente `--max-mem <GB>` via CLI.
-
-### [SEC-03] Perfil Seccomp Bloqueando Sandbox Interno de Aplicações (Severidade: Alta)
-
-O Firefox, o Chromium e aplicações baseadas em Electron tentam criar um mini-sandbox interno de content process chamando `capset()` e `chroot()` após a execução principal. O perfil seccomp padrão do Nuk4sd retornava `EPERM` para `capset()`, que o Firefox interpretava como falha fatal na primitiva de sincronização `futex`, abortando com "The futex facility returned an unexpected error code."
-
-**Impacto:** Firefox, GIMP, VS Code e outras aplicações GUI com sandbox interno próprio não conseguiam iniciar.
-
-**Correção:** Adicionado modo "GUI amigável" automático que é ativado sempre que o sandbox detecta modo Wayland ou X11 (`--wayland`/`--x11`). Nesse modo, `capset()`, `chroot()`, `setuid()` e `setgid()` são liberados no perfil seccomp para que o sandbox interno da aplicação funcione. O isolamento real continua garantido pelas camadas do Nuk4sd (capabilities zeradas, PID namespace, filesystem pivot_root), tornando as chamadas inofensivas mesmo que liberadas no filtro BPF.
-
-### [SEC-04] Nós de Dispositivo /dev Ausentes no Sandbox Unprivileged (Severidade: Alta)
-
-No modo unprivileged (sem sudo), o sandbox não conseguia criar device nodes via `mknod()` pois essa syscall exige `CAP_MKNOD`, que não existe no user namespace. Os placeholders de arquivo comum criados para `/dev/null`, `/dev/zero` e `/dev/tty` eram arquivos regulares vazios, não character devices reais.
-
-**Impacto:** Aplicações que escrevem em `/dev/null` acumulavam dados em disco; leituras de `/dev/zero` retornavam EOF; ausência de `/dev/shm`, `/dev/pts` e `/dev/urandom` fazia aplicações gráficas e criptográficas falharem por falta de entropia ou memória compartilhada.
-
-**Correção:** Implementado bind-mount seletivo dos device nodes do host para dentro do sandbox com flag de leitura/escrita para nós `/dev/*`. Os seguintes dispositivos são agora herdados do host em modo leitura/escrita: `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/random`, `/dev/shm`, `/dev/pts`, `/dev/dri`. Demais bind-mounts de diretórios continuam read-only.
+Version 0.9.28 represents a deep overhaul of the sandbox isolation layer, addressing namespace leakage vulnerabilities, critical graphical application execution issues, and native Rust interface refinements. The project remains free of root/sudo dependencies for creating functional sandboxes, operating with technical parity to Bubblewrap (bwrap), the engine behind Flatpak.
 
 ---
 
-## Funcionalidades Novas e Melhorias
+## Fixed Vulnerabilities
 
-### Interface Nativa em Rust (egui/eframe)
+### [SEC-01] Host PID Leakage via /proc (Severity: Medium)
 
-A interface gráfica foi completamente reescrita em Rust puro usando o framework `egui` com backend `eframe`. O antigo `nuk4sd_gui.py` (2635 linhas, dependente de PyQt5) foi removido. A nova GUI:
+The sandbox bound `/proc` from the host via inherited bind-mount prior to `pivot_root`, and the post-pivot remount silently failed because the mountpoint was already occupied. Consequently, processes inside the sandbox could enumerate actual host PIDs through `/proc`, violating PID namespace isolation.
 
-- Não tem dependência de Python, pip ou Qt no sistema operacional.
-- É compilada estaticamente no binário `Nuk4sd`, sem runtime separado.
-- Comunica-se diretamente com o core C via FFI sem subprocessos ou parsing de stdout.
-- Persiste perfis de aplicação em `~/.config/nuk4sd/desktop_apps.json` via serde_json.
-- Apresenta cinco abas: Desktop Grid, Vaults FUSE, Lançador, Sandboxes Ativos e Terminal CLI.
-- Expõe todas as flags de isolamento disponíveis na interface, sem ocultar opções avançadas.
-- Design visual em azul marinho neutro e cinza escuro, sem bibliotecas de tema externas.
+**Impact:** A malicious process inside the sandbox could observe running processes on the host, infer workloads and timing, and potentially use `/proc/<pid>/fd` as a read channel if accessible open file descriptors existed.
 
-### Lançamento de Aplicações GUI sem Vault (--no-fuse)
+**Fix:** Implemented a robust three-stage sequence prior to mounting a fresh `/proc`: (1) `umount2(MNT_DETACH)` to detach inherited procfs lazily without blocking on open file descriptors; (2) mountpoint creation with `EEXIST` validation; (3) mounting a new procfs scoped to the sandbox PID namespace with `MS_NOSUID | MS_NOEXEC | MS_NODEV`. Each step features structured logging via `vault_log()`, and mount failures log `LOG_ERROR` in the audit log rather than suppressing errors with `perror()`.
 
-O Desktop Grid agora detecta automaticamente quando `vault_id == 0` e usa `--no-fuse`, criando um jail temporário em `/tmp` sem exigir que o usuário crie um vault FUSE previamente. O `--rw-home` é adicionado automaticamente para que as aplicações mantenham acesso ao diretório home do usuário e suas configurações.
+### [SEC-02] RLIMIT_AS Breaking 64-bit Allocators in GUI Mode (Severity: High)
 
-### Preflight Scan Automático
+By default, the sandbox imposed a strict virtual address space limit (`RLIMIT_AS`) of 4 to 8 GB across all modes. Modern 64-bit allocators—especially Firefox's SpiderMonkey JIT and Chromium's V8—`mmap()` virtual memory regions far larger than physical RAM (virtual address space reservation). With the limit active, the kernel returned `ENOMEM` on `mmap()` calls during startup, leading to silent process failure prior to rendering.
 
-Antes de executar qualquer binário, o Nuk4sd analisa as dependências do executável via `ldd` e configura automaticamente:
-- Detecção de uso de GPU → monta `/dev/dri` e `/sys/dev/char`
-- Detecção de GTK/Qt → configura variáveis de ambiente Wayland/X11 e monta `/tmp/.X11-unix`
-- Detecção de áudio → monta sockets PipeWire e PulseAudio
-- Detecção de uso de rede → aviso se `--no-net` não foi especificado
+**Impact:** All modern graphical applications based on Electron, Firefox, or Chromium failed to start inside the sandbox with exit code 11 (SIGSEGV due to unmapped memory access).
 
-### Compatibilidade com Ambiente sem Root Verificada
+**Fix:** `RLIMIT_AS` removed from automatic defaults. The limit is only enforced when the user explicitly specifies `--max-mem <GB>` via CLI.
 
-Confirmado que o Nuk4sd opera em paridade técnica com o Bubblewrap em ambiente sem root. A sequência de isolamento é equivalente:
+### [SEC-03] Seccomp Profile Blocking Application Internal Sandboxes (Severity: High)
+
+Firefox, Chromium, and Electron-based applications attempt to construct an internal content process mini-sandbox by calling `capset()` and `chroot()` post primary execution. The standard Nuk4sd seccomp profile returned `EPERM` for `capset()`, which Firefox interpreted as a fatal error in the `futex` synchronization primitive, aborting with "The futex facility returned an unexpected error code."
+
+**Impact:** Firefox, GIMP, VS Code, and other GUI applications with their own internal sandboxes failed to launch.
+
+**Fix:** Added automatic "GUI friendly" mode triggered whenever the sandbox detects Wayland or X11 mode (`--wayland`/`--x11`). In this mode, `capset()`, `chroot()`, `setuid()`, and `setgid()` are permitted in the seccomp profile so internal application sandboxing works. True isolation remains guaranteed by Nuk4sd layers (cleared capabilities, PID namespace, filesystem pivot_root), rendering the calls harmless even if allowed in the BPF filter.
+
+### [SEC-04] Missing /dev Device Nodes in Unprivileged Sandbox (Severity: High)
+
+In unprivileged mode (without sudo), the sandbox could not create device nodes via `mknod()` because that syscall requires `CAP_MKNOD`, which is absent in user namespaces. Regular file placeholders created for `/dev/null`, `/dev/zero`, and `/dev/tty` were empty regular files rather than true character devices.
+
+**Impact:** Applications writing to `/dev/null` accumulated data on disk; reads from `/dev/zero` returned EOF; missing `/dev/shm`, `/dev/pts`, and `/dev/urandom` caused graphical and cryptographic applications to fail due to lack of entropy or shared memory.
+
+**Fix:** Implemented selective bind-mounting of host device nodes into the sandbox with read/write flags for `/dev/*` nodes. The following devices are now inherited from the host in read/write mode: `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/random`, `/dev/shm`, `/dev/pts`, `/dev/dri`. Other directory bind-mounts remain read-only.
+
+---
+
+## New Features and Improvements
+
+### Native Rust Interface (egui/eframe)
+
+The graphical interface was completely rewritten in pure Rust using the `egui` framework with an `eframe` backend. The legacy `nuk4sd_gui.py` (2635 lines, PyQt5 dependency) was removed. The new GUI:
+
+- Has no dependencies on Python, pip, or Qt on the host OS.
+- Is statically compiled into the `Nuk4sd` binary without a separate runtime.
+- Communicates directly with the C core via FFI without subprocesses or stdout parsing.
+- Persists application profiles in `~/.config/nuk4sd/desktop_apps.json` via serde_json.
+- Features five tabs: Desktop Grid, Vaults FUSE, Launcher, Active Sandboxes, and CLI Terminal.
+- Exposes all available isolation flags in the UI without hiding advanced options.
+- Visual design in neutral navy blue and dark gray without external theme libraries.
+
+### GUI Application Launcher Without Vault (--no-fuse)
+
+Desktop Grid now automatically detects when `vault_id == 0` and uses `--no-fuse`, creating a temporary jail in `/tmp` without requiring the user to create a FUSE vault beforehand. `--rw-home` is added automatically so applications maintain access to the user's home directory and settings.
+
+### Automatic Preflight Scan
+
+Prior to launching any binary, Nuk4sd analyzes executable dependencies via `ldd` and configures automatically:
+- GPU usage detection → mounts `/dev/dri` and `/sys/dev/char`
+- GTK/Qt detection → configures Wayland/X11 environment variables and mounts `/tmp/.X11-unix`
+- Audio detection → mounts PipeWire and PulseAudio sockets
+- Network usage detection → warns if `--no-net` was not specified
+
+### Verified Rootless Compatibility
+
+Confirmed that Nuk4sd operates with technical parity to Bubblewrap in non-root environments. The isolation sequence is equivalent:
 
 ```
-unshare(CLONE_NEWUSER)  →  escreve uid_map/gid_map  →
+unshare(CLONE_NEWUSER)  →  write uid_map/gid_map  →
 unshare(CLONE_NEWNS | CLONE_NEWPID)  →  bind-mounts  →
 pivot_root()  →  drop capabilities  →  NO_NEW_PRIVS  →
 seccomp-BPF  →  execvp()
 ```
 
-Diferentemente do Firejail (binário SUID root), o Nuk4sd não requer o bit setuid e não executa código como root em nenhum momento.
+Unlike Firejail (SUID root binary), Nuk4sd does not require the setuid bit and never executes code as root at any point.
 
 ---
 
-## Resultados do Escape Test (v0.9.28)
+## Escape Test Results (v0.9.28)
 
-Teste executado com `escape_test.sh` dentro do sandbox, comparado com baseline do host:
+Test executed with `escape_test.sh` inside the sandbox, compared to host baseline:
 
-| Vetor | Host (sem sandbox) | Nuk4sd v0.9.28 |
+| Vector | Host (un-sandboxed) | Nuk4sd v0.9.28 |
 |---|---|---|
-| Leitura de /etc/shadow | Não (permissão) | Bloqueado |
-| Acesso a ~/.ssh | Não (permissão) | Bloqueado |
-| PIDs do host via /proc | Vê 245 PIDs | Bloqueado (PID=1 próprio) |
-| mount procfs/bind/tmpfs | Não (sem caps) | Bloqueado |
-| chroot | Não (sem caps) | Bloqueado |
-| Binário SUID/setuid | Não (sem caps) | Bloqueado (NO_NEW_PRIVS) |
-| Capabilities efetivas | Zeradas (usuário normal) | Zeradas |
-| kexec_load | Aberta | Bloqueada (KILL_PROCESS) |
-| pivot_root aninhado | Não (sem caps) | Bloqueado |
-| /dev/mem, /dev/sda, /dev/kmem | Não acessíveis | Não expostos |
-| Acesso à rede externa | Aberto | Bloqueado (rede host compartilhada por padrão) |
+| Read /etc/shadow | No (permission) | Blocked |
+| Access ~/.ssh | No (permission) | Blocked |
+| Host PIDs via /proc | Sees 245 PIDs | Blocked (own PID=1) |
+| mount procfs/bind/tmpfs | No (no caps) | Blocked |
+| chroot | No (no caps) | Blocked |
+| SUID/setuid binary | No (no caps) | Blocked (NO_NEW_PRIVS) |
+| Effective capabilities | Cleared (normal user) | Cleared |
+| kexec_load | Open | Blocked (KILL_PROCESS) |
+| Nested pivot_root | No (no caps) | Blocked |
+| /dev/mem, /dev/sda, /dev/kmem | Inaccessible | Unexposed |
+| External network access | Open | Blocked (host network shared by default) |
 
 ---
 
-## Comparativo com Firejail 0.9.72
+## Comparison with Firejail 0.9.72
 
-Teste realizado com `firejail --noprofile firefox` e `firejail firefox` (com perfil padrão):
+Test conducted using `firejail --noprofile firefox` and `firejail firefox` (with default profile):
 
-| Camada | Firejail sem perfil | Firejail com perfil | Nuk4sd v0.9.28 |
+| Layer | Firejail unprofiled | Firejail profiled | Nuk4sd v0.9.28 |
 |---|---|---|---|
-| User namespace própria | Não (host) | Não (host) | Sim |
-| PID namespace | Sim | Sim | Sim |
-| Mount namespace | Sim | Sim | Sim |
-| pivot_root | Não | Não | Sim (host detachado) |
-| Seccomp-BPF | Desativado | Ativo (modo 2) | Ativo (modo 1) |
-| NO_NEW_PRIVS | Não | Sim | Sim |
-| Capabilities | CapBnd completo | CapBnd zerado | CapEff zero |
-| Requer SUID root | Sim | Sim | Não |
-| Perfis por aplicação | Não | 900+ perfis | Genérico (presets por categoria) |
+| Dedicated user namespace | No (host) | No (host) | Yes |
+| PID namespace | Yes | Yes | Yes |
+| Mount namespace | Yes | Yes | Yes |
+| pivot_root | No | No | Yes (host detached) |
+| Seccomp-BPF | Disabled | Active (mode 2) | Active (mode 1) |
+| NO_NEW_PRIVS | No | Yes | Yes |
+| Capabilities | CapBnd full | CapBnd cleared | CapEff zero |
+| Requires SUID root | Yes | Yes | No |
+| Per-app profiles | No | 900+ profiles | Generic (category presets) |
 
-O Firejail leva vantagem nos perfis específicos por aplicação, que contêm whitelists de paths e regras seccomp customizadas para cada programa. O Nuk4sd leva vantagem em user namespace própria, pivot_root completo e ausência de SUID.
+Firejail holds an advantage in application-specific profiles with path whitelists and custom seccomp rules for each program. Nuk4sd holds the advantage in dedicated user namespaces, full pivot_root, and absence of SUID.
 
 ---
 
-## Arquivos Modificados Nesta Versão
+## Modified Files in This Release
 
-- `c_src/jail.c` — bind-mount de device nodes `/dev/*` em modo RW; fix do `/proc` herdado
-- `c_src/vault_cli.c` — remoção de `RLIMIT_AS` dos defaults; seccomp amigável automático para GUI; remount robusto de `/proc` com `umount2(MNT_DETACH)` + logging estruturado
-- `c_src/seccomp.c` — comentários de justificativa expandidos; modo permissivo para sandbox interno de aplicações
-- `rust/gui.rs` — interface nativa completa em egui; Desktop Grid; Vaults Manager; Lançador; Terminal
-- `rust/ffi.rs` — bindings FFI completos; `rust_vault_copy_file` exportado como símbolo C
-- `rust/main.rs` — rota `--gui` para interface nativa
-- `Cargo.toml` — dependências serde/serde_json; versão 0.9.28
-- `.gitignore` — exclusão de logs, objetos compilados, chaves e arquivos de sessão
+- `c_src/jail.c` — bind-mount device nodes `/dev/*` in RW mode; fixed inherited `/proc`
+- `c_src/vault_cli.c` — removed `RLIMIT_AS` defaults; automatic friendly seccomp for GUI; robust `/proc` remount with `umount2(MNT_DETACH)` + structured logging
+- `c_src/seccomp.c` — expanded justification comments; permissive mode for application internal sandboxing
+- `rust/gui.rs` — full native egui interface; Desktop Grid; Vaults Manager; Launcher; Terminal
+- `rust/ffi.rs` — full FFI bindings; `rust_vault_copy_file` exported as C symbol
+- `rust/main.rs` — `--gui` route for native interface
+- `Cargo.toml` — serde/serde_json dependencies; version 0.9.28
+- `.gitignore` — excluded logs, compiled objects, keys, and session files

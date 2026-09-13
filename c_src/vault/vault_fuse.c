@@ -47,6 +47,7 @@
 #include <stdlib.h>
 
 #include "vault_core.h"
+#include "../sandbox/sandbox.h"
 
 #include <time.h>
 
@@ -105,16 +106,13 @@ static void register_fuse_atexit(void)
     double _elapsed = (_ts_end.tv_sec - _ts_start.tv_sec) * 1000.0 + \
                       (_ts_end.tv_nsec - _ts_start.tv_nsec) / 1e6; \
     if ((res) < 0) { \
-        /* FIX: -ENOENT ("arquivo não existe") é o resultado NORMAL de   \
-         * qualquer processo sondando caminhos que simplesmente não     \
-         * existem no vault (ex.: /etc/selinux, /.flatpak-info,         \
-         * /sys/devices quando não bind-montados) — GTK, glib e o       \
-         * próprio Firefox fazem isso aos milhares numa sessão GUI.     \
-         * Logar isso como LOG_ERROR não indica problema nenhum, só     \
-         * afoga qualquer erro que IMPORTE de verdade (ex.: -EPERM de   \
-         * um bloqueio WORM, -EIO de um problema real de disco) no      \
-         * meio de milhares de linhas de ruído. Silenciamos só o        \
-         * ENOENT; qualquer outro errno continua em LOG_ERROR. */       \
+        /* FIX: -ENOENT ("file does not exist") is the NORMAL result of   \
+         * any process probing paths that simply do not exist in the     \
+         * vault (e.g., /etc/selinux, /.flatpak-info, /sys/devices       \
+         * when not bind-mounted) — GTK, glib, and Firefox probe         \
+         * thousands of these in a GUI session. Logging this as          \
+         * LOG_ERROR creates noise and drowns out actual errors. We      \
+         * silence only ENOENT; any other errno remains in LOG_ERROR. */ \
         if ((res) != -ENOENT) { \
             vault_log(LOG_ERROR, "[FUSE] %s '%s' failed: %d (%.3fms) [vault=%s]", op, path, (res), _elapsed, _v_log ? _v_log->name : "?"); \
         } \
@@ -285,22 +283,22 @@ static int vfuse_write(const char *path, const char *buf, size_t size,
      * is first called — we allow those writes through so that initial
      * population still works.
      *
-     * Fix TOCTOU: em vez de lstat() + open() separados (janela de corrida
-     * entre a checagem e a abertura), usamos O_CREAT|O_EXCL quando WORM
-     * está ativo. O kernel garante atomicidade: se o arquivo já existir,
-     * open() retorna EEXIST imediatamente — sem janela para substituição
-     * via rename() concorrente. Se não existir, cria e abre atomicamente.
-     * Quando WORM não está ativo, usamos O_WRONLY|O_CREAT convencional
-     * para preservar o comportamento de sobrescrita normal.              */
+     * Fix TOCTOU: instead of separate lstat() + open() calls (race window
+     * between check and open), we use O_CREAT|O_EXCL when WORM is active.
+     * The kernel guarantees atomicity: if the file already exists, open()
+     * returns EEXIST immediately — avoiding race conditions via concurrent
+     * rename(). If it does not exist, it creates and opens atomically.
+     * When WORM is inactive, we use standard O_WRONLY|O_CREAT to preserve
+     * normal overwrite behavior.              */
 
     (void) fi;
     int fd;
     if (v && worm_check(v, WORM_PROTECT_WRITE)) {
-        /* Tentativa atômica: abre EXCLUSIVAMENTE (cria se não existe) */
+        /* Atomic attempt: open EXCLUSIVELY (create if non-existent) */
         fd = open(full_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
         if (fd == -1) {
             if (errno == EEXIST) {
-                /* Arquivo já existe → overwrite bloqueado pelo WORM */
+                /* File already exists → overwrite blocked by WORM */
                 worm_deny_log(v, "write", path);
                 int err = -EPERM;
                 FUSE_LOG_END("write", path, err);
@@ -488,11 +486,27 @@ static void *vault_fuse_loop(void *arg)
               v->cipher_path);
     chmod(v->cipher_path, 0700);
 
+    /* MAC Layer: load AppArmor profile if enabled globally */
+    if (g_catalog.mac_mode == 1) {
+        int mac_result = mac_apparmor_load(v);
+        if (mac_result != ERR_OK && mac_result != ERR_PERM_DENIED) {
+            vault_log(LOG_WARN,
+                      "[MAC] AppArmor profile load failed for vault %u — "
+                      "continuing with WORM + chmod 0000 protection only",
+                      v->id);
+        }
+    }
+
     int res = fuse_loop_mt(td->f, 1); /* multi-threaded FUSE loop */
 
     vault_log(LOG_INFO,
               "[FUSE_LIFECYCLE] Loop EXITED │ vault_id=%u │ name='%s' │ exit_code=%d",
               v->id, v->name, res);
+
+    /* MAC Layer: remove AppArmor profile before physical re-seal */
+    if (g_catalog.mac_mode == 1) {
+        mac_apparmor_remove(v->id);
+    }
 
     /* Re-seal the physical directory immediately after FUSE tears down */
     chmod(v->cipher_path, 0000);

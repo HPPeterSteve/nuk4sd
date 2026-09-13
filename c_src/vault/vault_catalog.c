@@ -33,15 +33,15 @@ char g_catalog_file[VAULT_PATH_MAX];
 char g_log_file[VAULT_PATH_MAX];
 char g_lock_file[VAULT_PATH_MAX];
 
-/* Cria todos os diretórios do caminho (equivalente a `mkdir -p`).
- * Necessário porque mkdir() simples falha com ENOENT se QUALQUER
- * diretório pai estiver faltando (ex: ~/.local não existe ainda). */
+/* Creates all directory components of path (equivalent to `mkdir -p`).
+ * Required because simple mkdir() fails with ENOENT if ANY parent
+ * directory is missing (e.g. ~/.local does not exist yet). */
 static int mkdir_p(const char *path) {
     char tmp[VAULT_PATH_MAX];
     size_t len = snprintf(tmp, sizeof(tmp), "%s", path);
     if (len == 0 || len >= sizeof(tmp)) return -1;
 
-    /* remove trailing slash, se houver */
+    /* remove trailing slash if present */
     if (tmp[len - 1] == '/') tmp[len - 1] = '\0';
 
     for (char *p = tmp + 1; *p; p++) {
@@ -72,11 +72,11 @@ void resolve_paths(void) {
     snprintf(g_log_file, sizeof(g_log_file), "%s/.local/share/Nuk4sd/vault_security.log", home);
     snprintf(g_lock_file, sizeof(g_lock_file), "%s/.local/share/Nuk4sd/vault_security.pid", home);
 
-    /* Create dir if it doesn't exist (cria toda a árvore, incluindo ~/.local) */
+    /* Create dir if it doesn't exist (creates entire directory tree including ~/.local) */
     struct stat st;
     if (stat(g_catalog_path, &st) != 0) {
         if (mkdir_p(g_catalog_path) != 0) {
-            vault_log(LOG_ERROR, "Falha ao criar diretório do catálogo '%s': %s",
+            vault_log(LOG_ERROR, "Failed to create catalog directory '%s': %s",
                       g_catalog_path, strerror(errno));
         }
     }
@@ -84,7 +84,7 @@ void resolve_paths(void) {
     /* Auto-migrate from legacy root path if user-space catalog doesn't exist yet */
     const char *legacy_catalog = "/var/lib/vault_security/catalog.dat";
     if (stat(g_catalog_file, &st) != 0 && stat(legacy_catalog, &st) == 0) {
-        vault_log(LOG_INFO, "Migrando catalog.dat legado de %s para %s", legacy_catalog, g_catalog_file);
+        vault_log(LOG_INFO, "Migrating legacy catalog.dat from %s to %s", legacy_catalog, g_catalog_file);
         
         FILE *src = fopen(legacy_catalog, "rb");
         if (src) {
@@ -97,23 +97,18 @@ void resolve_paths(void) {
                 }
                 fclose(dst);
                 chmod(g_catalog_file, 0600);
-                /* substituindo antigo vault-log que não mostrava argumento nenhum*/
-                char msg[9];
-                snprintf(msg, sizeof(msg), "Detalhes: %d", src, dst);
-                vault_log(LOG_INFO, msg);
-                
             } else {
-                vault_log(LOG_ERROR, "Falha ao criar o novo catalog.dat em %s", g_catalog_file);
+                vault_log(LOG_ERROR, "Failed to create new catalog.dat at %s", g_catalog_file);
             }
             fclose(src);
 
         } else {
-            int saved_errno = errno;  /* captura antes que outra chamada mude errno */
+            int saved_errno = errno;  /* capture before another call changes errno */
             if (saved_errno == EACCES || saved_errno == EPERM || saved_errno == ENOENT || saved_errno == EISDIR || saved_errno == EROFS) {
-                vault_log(LOG_WARN, "Sem permissão para ler catalog.dat legado em '%s': %s",
+                vault_log(LOG_WARN, "Permission denied reading legacy catalog.dat at '%s': %s",
                     legacy_catalog, strerror(saved_errno));
             } else {
-                vault_log(LOG_WARN, "Não foi possível abrir catalog.dat legado em '%s': %s",
+                vault_log(LOG_WARN, "Unable to open legacy catalog.dat at '%s': %s",
                     legacy_catalog, strerror(saved_errno));
             }
         }
@@ -122,7 +117,7 @@ void resolve_paths(void) {
 
 /*
   *  SECTION 5: FILE HASH MAP
- * */
+  * */
 
 uint32_t hashmap_bucket(const char *s)
 {
@@ -181,7 +176,7 @@ void hashmap_clear(FileHashMap *m)
 
 /*
   *  SECTION 6: CATALOG SERIALISATION
- * */
+  * */
 
 VaultErrorr catalog_save(void)
 {
@@ -202,6 +197,7 @@ VaultErrorr catalog_save(void)
     fwrite(&g_catalog.count, 4, 1, fp);
     fwrite(&g_catalog.next_id, 4, 1, fp);
     fwrite(g_catalog.category, 1, 32, fp);
+    fwrite(&g_catalog.mac_mode, 1, 1, fp);
 
     for (uint32_t i = 0; i < g_catalog.count; i++)
     {
@@ -280,6 +276,7 @@ VaultErrorr catalog_load(void)
             vault_log(LOG_INFO, "No catalog found, starting fresh");
             strncpy(g_catalog.category, "Nuk4sd", 31);
             g_catalog.next_id = 1;
+            g_catalog.mac_mode = -1;
             return ERR_OK;
         }
         vault_log(LOG_ERROR, "catalog_load: %s", strerror(errno));
@@ -301,7 +298,7 @@ VaultErrorr catalog_load(void)
         vault_log(LOG_ERROR, "catalog_load: failed to read version byte");
         return ERR_IO;
     }
-    if (ver != CATALOG_VER)
+    if (ver != CATALOG_VER && ver != 2)
     {
         fclose(fp);
         vault_log(LOG_WARN,
@@ -314,6 +311,7 @@ VaultErrorr catalog_load(void)
         rename(VAULT_CATALOG_FILE, bak);
         strncpy(g_catalog.category, "Nuk4sd", 31);
         g_catalog.next_id = 1;
+        g_catalog.mac_mode = -1;
         return ERR_OK;
     }
 
@@ -331,6 +329,11 @@ VaultErrorr catalog_load(void)
     FREAD_CHECK(&g_catalog.count, 4, fp);
     FREAD_CHECK(&g_catalog.next_id, 4, fp);
     FREAD_CHECK(g_catalog.category, 32, fp);
+    if (ver >= 3) {
+        FREAD_CHECK(&g_catalog.mac_mode, 1, fp);
+    } else {
+        g_catalog.mac_mode = -1;
+    }
 
     if (g_catalog.count > MAX_VAULTS)
     {
@@ -410,7 +413,7 @@ VaultErrorr catalog_load(void)
 
 /*
   *  SECTION 7: VAULT MANAGER
- * */
+  * */
 
 Vault *vault_find_by_id(uint32_t id)
 {

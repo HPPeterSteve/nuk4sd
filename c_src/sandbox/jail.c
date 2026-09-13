@@ -1,10 +1,10 @@
 /*
  * jail.c
  *
- * Nuk4sd — Hardened Sandbox — Estrutura do jail (dirs, /dev, shell, GUI binds)
- * Extraído de vault_sandbox.c 
+ * Nuk4sd — Hardened Sandbox — Jail structure (dirs, /dev, shell, GUI binds)
+ * Extracted from vault_sandbox.c
  *
- * Chama vsb_limit_resources() (rlimits.c) durante a preparação do jail.
+ * Calls vsb_limit_resources() (rlimits.c) during jail preparation.
  */
 
 #include "sandbox.h"
@@ -14,12 +14,12 @@
 /* ─────────────────────────────────────────────────────────────────────────
  *  jail_run_installer(): Fork + exec package manager to install busybox-static
  *
- *  Tenta os package managers conhecidos em ordem. Retorna 0 se o processo
- *  do instalador saiu com success, -1 caso contrário.
- *  Não garante que o pacote existe — o chamador deve re-checar o path.
- * ───────────── */
- 
- /* Algoritmo clássico de Levenshtein */
+ *  Tries known package managers in order. Returns 0 if installer process
+ *  exited with success, -1 otherwise.
+ *  Does not guarantee package existence — caller must re-check path.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* Classic Levenshtein algorithm */
 int levenshtein(const char *s1, const char *s2) {
     int len1 = strlen(s1), len2 = strlen(s2);
     int matrix[len1 + 1][len2 + 1];
@@ -39,7 +39,7 @@ int levenshtein(const char *s1, const char *s2) {
     return matrix[len1][len2];
 }
 
-/* Busca o executável mais parecido nos diretórios do PATH */
+/* Searches for closest binary executable in PATH directories */
 char *find_closest_binary(const char *target, int max_distance) {
     const char *paths[] = {        
         "/usr/bin/apt-get",
@@ -59,7 +59,7 @@ char *find_closest_binary(const char *target, int max_distance) {
 
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
-            /* Ignora . e .. */
+            /* Ignore . and .. */
             if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
                 continue;
 
@@ -68,7 +68,7 @@ char *find_closest_binary(const char *target, int max_distance) {
                 char full_path[1024];
                 snprintf(full_path, sizeof(full_path), "%s/%s", paths[p], entry->d_name);
 
-                /* Checa se é um arquivo executável válido */
+                /* Check if it is a valid executable file */
                 if (access(full_path, X_OK) == 0) {
                     min_dist = dist;
                     free(best_match_path);
@@ -78,12 +78,12 @@ char *find_closest_binary(const char *target, int max_distance) {
         }
         closedir(dir);
     }
-    return best_match_path; /* Retorna o caminho ou NULL se nada for parecido */
+    return best_match_path; /* Returns path or NULL if nothing is close */
 }
 
 static int jail_run_installer(void)
 {
-    /* Cada entrada: { argv[0..n], NULL } */
+    /* Each entry: { argv[0..n], NULL } */
     const char *installers[][6] = {
         /* Debian / Ubuntu */
         { "apt-get", "install", "-y", "--no-install-recommends", "busybox-static", NULL },
@@ -98,13 +98,13 @@ static int jail_run_installer(void)
         { NULL }
     };
 
-    /* Paths de busca para os binários dos package managers */
+    /* Search paths for package manager binaries */
     const char *pm_paths[] = paths;
     free(paths);
 
 
     for (int i = 0; installers[i][0] != NULL; i++) {
-        /* Verifica se o pm existe antes de forkar */
+        /* Check if pm exists before forking */
         struct stat st;
         if (stat(pm_paths[i], &st) != 0)
             continue;
@@ -120,8 +120,8 @@ static int jail_run_installer(void)
         }
 
         if (pid == 0) {
-            /* Filho: redireciona stdout/stderr para /dev/null se não for root
-             * para não poluir o terminal com output do apt */
+            /* Child: redirect stdout/stderr to /dev/null if non-root
+             * to avoid cluttering terminal with apt output */
             if (geteuid() != 0) {
                 int devnull = open("/dev/null", O_WRONLY);
                 if (devnull >= 0) {
@@ -130,10 +130,8 @@ static int jail_run_installer(void)
                     close(devnull);
                 }
             }
-            /* execvp busca no PATH automaticamente */
-            /* Em aberto: Implementar algoritmo de Levensten para 
-            detectar o package correto para encontrar o executavel
-            */
+            /* execvp searches PATH automatically */
+            /* TODO: Implement Levenshtein algorithm to detect correct package manager */
             if (execvp(installers[i][0], (char *const *)installers[i]) < 0) {
                 char *fallback = find_closest_binary(installers[i][0], 2);
             if (fallback) {
@@ -160,19 +158,19 @@ static int jail_run_installer(void)
                   pm_paths[i], WIFEXITED(status) ? WEXITSTATUS(status) : -1);
     }
 
-    return -1; /* nenhum instalador funcionou */
+    return -1; /* no installer succeeded */
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- *  jail_install_shell(): Garante que /bin/sh existe dentro do jail
+ *  jail_install_shell(): Ensures /bin/sh exists inside the jail
  *
- *  Ordem de tentativas:
- *    1. Copia busybox estático já presente no host (mais rápido)
- *    2. Chama o package manager para instalar busybox-static e tenta de novo
- *    3. Desiste e loga aviso — sandbox vai subir mas sem shell
+ *  Attempt order:
+ *    1. Copy static busybox already present on host (fastest)
+ *    2. Call package manager to install busybox-static and retry
+ *    3. Give up and log warning — sandbox will launch but without shell
  *
- *  O busybox DEVE ser estático: após pivot_root o /lib do host não existe.
- * ───────────── */
+ *  busybox MUST be static: after pivot_root, host /lib does not exist.
+ * ───────────────────────────────────────────────────────────────────────── */
 static int jail_install_shell(const char *vault_path)
 {
     static const char *candidates[] = {
@@ -186,7 +184,7 @@ static int jail_install_shell(const char *vault_path)
     char dst[VAULT_PATH_MAX];
     snprintf(dst, sizeof(dst), "%s/bin/sh", vault_path);
 
-    /* ── Já existe e não é vazio? Não mexe. ─────────────────────────── */
+    /* ── Already exists and non-empty? Do not touch. ─────────────────── */
     {
         struct stat st;
         if (stat(dst, &st) == 0 && st.st_size > 0) {
@@ -196,21 +194,21 @@ static int jail_install_shell(const char *vault_path)
         }
     }
 
-    /* ── Tentativa 1: copia do host ──────────────────────────────────── */
+    /* ── Attempt 1: copy from host ──────────────────────────────────── */
     for (int i = 0; candidates[i]; i++) {
         struct stat st;
         if (stat(candidates[i], &st) != 0)
             continue;
 
-        /* Abre origem */
+        /* Open source */
         int src = open(candidates[i], O_RDONLY | O_CLOEXEC);
         if (src < 0) continue;
 
-        /* Abre destino */
+        /* Open destination */
         int dst_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0755);
         if (dst_fd < 0) { close(src); continue; }
 
-        /* Copia em blocos de 64 KB */
+        /* Copy in 64 KB blocks */
         char buf[65536];
         ssize_t n;
         int ok = 1;
@@ -227,17 +225,17 @@ static int jail_install_shell(const char *vault_path)
             continue;
         }
 
-        /* Verifica se é realmente estático para avisar o usuário */
+        /* Check if truly static to warn user */
         int is_static = 0;
         {
-            /* Heurística rápida: ELF dinâmico tem PT_INTERP; abre e procura
-             * a string "/lib" nos primeiros 4 KB do arquivo */
+            /* Quick heuristic: dynamic ELF has PT_INTERP; open and search
+             * for string "/lib" in first 4 KB of file */
             int probe = open(candidates[i], O_RDONLY | O_CLOEXEC);
             if (probe >= 0) {
                 char head[4096];
                 ssize_t r = read(probe, head, sizeof(head));
                 close(probe);
-                /* Se não achou interpreter path, é estático */
+                /* If no interpreter path found, it is static */
                 is_static = (r > 0 && memmem(head, (size_t)r, "/lib", 4) == NULL);
             }
         }
@@ -264,7 +262,7 @@ static int jail_install_shell(const char *vault_path)
     int installed = jail_run_installer();
 
     if (installed == 0) {
-        /* Re-tenta a cópia após instalação */
+        /* Retry copy after installation */
         for (int i = 0; candidates[i]; i++) {
             struct stat st;
             if (stat(candidates[i], &st) != 0)
@@ -300,12 +298,11 @@ static int jail_install_shell(const char *vault_path)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- *  vault_mkdir_p — cria todos os componentes intermediários do path
- *  (espelha cli_mkdir_p de vault_cli.c — necessário porque um vault recém
- *  criado não tem NENHUM diretório padrão como /etc dentro dele. Um mkdir()
- *  de um nível só falha com ENOENT se o pai ainda não existir, ex:
- *  dst="vault/etc/fonts" mas "vault/etc" ainda não foi criado.)
- * ───────────── */
+ *  vault_mkdir_p — creates all intermediate path components
+ *  (mirrors cli_mkdir_p of vault_cli.c — necessary because a newly created
+ *  vault has NO default directory such as /etc inside it. A single-level
+ *  mkdir() fails with ENOENT if parent does not exist yet).
+ * ───────────────────────────────────────────────────────────────────────── */
 static int vault_mkdir_p(const char *path, mode_t mode) {
     char tmp[VAULT_PATH_MAX];
     size_t len = (size_t)snprintf(tmp, sizeof(tmp), "%s", path);
@@ -326,7 +323,7 @@ static int vault_mkdir_p(const char *path, mode_t mode) {
 
 /* ─────────────────────────────────────────────────────────────────────────
  *  vault_prepare_jail(): Prepare jail structure inside vault path
- * ───────────── */
+ * ───────────────────────────────────────────────────────────────────────── */
 static void vault_prepare_jail(const char *vault_path, bool gui_mode)
 {
     char marker[VAULT_PATH_MAX];
@@ -360,12 +357,9 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
         }
     }
 
-    /* Mesmo bloco "always ensure", mas para os device nodes reais
-     * (mknod). Precisa ficar ANTES do "if (stat(marker...)) return;"
-     * abaixo — senão, vaults que já rodaram antes (marker já presente)
-     * nunca alcançam este código, e continuam com /dev/null, /dev/zero
-     * e /dev/tty como arquivos comuns vazios (placeholder criado acima)
-     * em vez de devices de verdade. */
+    /* Same "always ensure" block, but for real device nodes (mknod).
+     * Must be BEFORE "if (stat(marker...)) return;" below — otherwise
+     * vaults that ran previously (marker present) never reach this code. */
     if (geteuid() == 0)
     {
         char dev_null[VAULT_PATH_MAX], dev_zero[VAULT_PATH_MAX], dev_tty[VAULT_PATH_MAX];
@@ -373,15 +367,9 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
         snprintf(dev_zero, sizeof(dev_zero), "%s/dev/zero", vault_path);
         snprintf(dev_tty,  sizeof(dev_tty),  "%s/dev/tty",  vault_path);
 
-        /* O bloco acima já cria estes três paths como ARQUIVOS COMUNS
-         * VAZIOS (placeholder pensado pro bind-mount usado no caminho
-         * geteuid()!=0). Por isso não basta checar "stat() != 0" aqui —
-         * o arquivo já existe, só que não é um device de verdade.
-         * Checamos S_ISCHR explicitamente e, se o placeholder estiver
-         * no lugar, removemos antes do mknod(). Sem isso, /dev/null e
-         * /dev/zero ficavam sendo arquivos comuns disfarçados (escrever
-         * "descartava" nada, ler de /dev/zero retornava EOF em vez de
-         * zeros). */
+        /* Block above creates these three paths as EMPTY REGULAR FILES
+         * (placeholder meant for bind-mount in geteuid()!=0 path).
+         * Explicitly check S_ISCHR and remove placeholder before mknod(). */
         struct stat dst;
         if (stat(dev_null, &dst) != 0 || !S_ISCHR(dst.st_mode)) {
             unlink(dev_null);
@@ -391,10 +379,7 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
             unlink(dev_zero);
             mknod(dev_zero, S_IFCHR | 0666, makedev(1, 5));
         }
-        /* /dev/tty (major 5, minor 0) — antes NUNCA era criado como
-         * device real neste caminho (geteuid()==0, ou seja, o uso
-         * normal via sudo): o bloco que cuidava dele só rodava sob
-         * "geteuid() != 0", que nunca é verdade aqui. */
+        /* /dev/tty (major 5, minor 0) */
         if (stat(dev_tty, &dst) != 0 || !S_ISCHR(dst.st_mode)) {
             unlink(dev_tty);
             mknod(dev_tty, S_IFCHR | 0666, makedev(5, 0));
@@ -420,7 +405,7 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
             snprintf(parent, sizeof(parent), "%s", dir);
             char *last_dir = strrchr(parent, '/');
             if (last_dir) { 
-                /* retira o ultimo diretorio para poder criar o pai dele mesmo (como no caso do etc/fonts) */
+                /* remove last directory to create parent directory */
                 *last_dir = '\0'; 
                 mkdir(parent, 0755); 
             }
@@ -430,7 +415,7 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
         }
     }
 
-    /* ── Garante /bin/sh dentro do jail (auto-instala se necessário) ── */
+    /* ── Ensures /bin/sh inside jail (auto-installs if needed) ── */
     jail_install_shell(vault_path);
 
     int fd = open(marker, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0400);
@@ -455,17 +440,9 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- *  vault_bind_gui_deps(): bind-monta /usr, /lib, /lib64, fontconfig, DRI,
- *  X11 socket etc. (read-only) do HOST para dentro do jail.
- *
- *  FIX: vault_prepare_jail() (acima) só faz mkdir() dos diretórios
- *  "usr", "lib", "etc" etc. em modo GUI — eles ficam VAZIOS. O bind-mount
- *  de verdade só existia dentro de vault_sandbox_open() (mais abaixo),
- *  que o caminho `--run` de vault_cli.c NUNCA chama. Resultado: qualquer
- *  preset não-minimal rodando via `--run` (com ou sem --no-fuse) tinha
- *  um /usr vazio por dentro — o binário do app simplesmente não existia
- *  no jail. Extraído aqui como função própria para ser chamado tanto por
- *  vault_sandbox_open() quanto pelo run_exec de vault_cli.c. */
+ *  vault_bind_gui_deps(): bind-mounts /usr, /lib, /lib64, fontconfig, DRI,
+ *  X11 socket etc. (read-only) from HOST into the jail.
+ * ───────────────────────────────────────────────────────────────────────── */
 void vsb_bind_gui_deps(const char *jail_path)
 {
     printf("[SANDBOX] [Layer 2.5] GUI Mode: Bind mounting host GUI dependencies...\n");
@@ -505,7 +482,7 @@ void vsb_bind_gui_deps(const char *jail_path)
 
 /* ─────────────────────────────────────────────────────────────────────────
  *  vault_sandbox_open() — Nuk4sd Hardened Sandbox v2
- * ───────────── */
+ * ───────────────────────────────────────────────────────────────────────── */
 VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, const char *app_cmd)
 {
     if (!v)
@@ -552,8 +529,8 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
 
     vault_prepare_jail(v->path, gui_mode);
 
-    int sync_pipe[2];   /* pai -> filho: "mapeamento já escrito" */
-    int ready_pipe[2];  /* filho -> pai: "unshare(CLONE_NEWUSER) já feito" */
+    int sync_pipe[2];   /* parent -> child: "mapping already written" */
+    int ready_pipe[2];  /* child -> parent: "unshare(CLONE_NEWUSER) already called" */
     if (pipe(sync_pipe) != 0 || pipe(ready_pipe) != 0)
     {
         vault_log(LOG_ERROR, "[SANDBOX] pipe failed: %s", strerror(errno));
@@ -579,19 +556,17 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
         close(ready_pipe[1]);
         close(sync_pipe[0]);
 
-        /* Espera o filho sinalizar que já chamou unshare(CLONE_NEWUSER) —
-         * sem isso, escrever em /proc/[pid]/uid_map cedo demais falha com
-         * EPERM, porque o PID ainda pertence à user namespace antiga. */
+        /* Wait for child to signal unshare(CLONE_NEWUSER) completed */
         {
             char c;
             ssize_t r = read(ready_pipe[0], &c, 1);
             if (r != 1)
-                vault_log(LOG_ERROR, "[SANDBOX] ready_pipe read falhou: %s", strerror(errno));
+                vault_log(LOG_ERROR, "[SANDBOX] ready_pipe read failed: %s", strerror(errno));
         }
         close(ready_pipe[0]);
 
         if (vsb_write_uid_gid_map(pid, host_uid, host_gid) != 0) {
-            vault_log(LOG_ERROR, "[SANDBOX] uid_map/gid_map falhou — abortando sandbox.");
+            vault_log(LOG_ERROR, "[SANDBOX] uid_map/gid_map failed — aborting sandbox.");
             kill(pid, SIGKILL);
             close(sync_pipe[1]);
             int status;
@@ -654,7 +629,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
 
     /* CHILD — SANDBOX */
 
-    /* Rename the process so it appears distinctly in htop/task managers */
+    /* Rename process for task managers */
     prctl(PR_SET_NAME, "Nuk4sd-Jail", 0, 0, 0);
 
     close(sync_pipe[1]);
@@ -670,12 +645,11 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     }
     printf("[SANDBOX] [Layer 1/5] User Namespace unshared. Signaling host to assign UID/GID mappings...\n");
 
-    /* Avisa o pai AGORA que a user namespace já existe — só depois disso
-     * é seguro o pai escrever em /proc/[este_pid]/uid_map e gid_map. */
+    /* Signal parent NOW that user namespace exists */
     {
         char c = 'r';
         if (write(ready_pipe[1], &c, 1) != 1)
-            fprintf(stderr, "[SANDBOX][WARN] ready_pipe write falhou: %s\n", strerror(errno));
+            fprintf(stderr, "[SANDBOX][WARN] ready_pipe write failed: %s\n", strerror(errno));
         close(ready_pipe[1]);
     }
 
@@ -685,8 +659,8 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
         read(sync_pipe[0], &c, 1);
         close(sync_pipe[0]);
     }
-    printf("[SANDBOX] [Layer 1/5] UID/GID mapping initialized (identidade): ns-%d -> host-%d "
-           "(seu UID real dos dois lados — sem 0, Firefox/apps GUI não recusam mais).\n",
+    printf("[SANDBOX] [Layer 1/5] UID/GID mapping initialized (identity): ns-%d -> host-%d "
+           "(your real UID on both sides — no UID 0, GUI apps will not reject).\n",
            (int)host_uid, (int)host_uid);
 
     /* [Layer 2] Mount + PID Namespace */
@@ -713,13 +687,10 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
         if (WIFSIGNALED(st)) {
             int sig = WTERMSIG(st);
             fprintf(stderr,
-                "[SANDBOX][FATAL] processo filho (PID 1 do namespace) morto pelo sinal %d (%s)"
-                " — possível violação de seccomp/allowlist se sig=31 (SIGSYS). "
-                "Verifique 'dmesg' por 'audit: type=1326 ... comm=\"<processo>\" syscall=N'.\n",
+                "[SANDBOX][FATAL] child process (PID 1 of namespace) killed by signal %d (%s)"
+                " — possible seccomp/allowlist violation if sig=31 (SIGSYS). "
+                "Check 'dmesg' for 'audit: type=1326 ... comm=\"<process>\" syscall=N'.\n",
                 sig, strsignal(sig));
-            /* Convenção padrão shell: 128+sinal, para não confundir com um
-             * exit(1) genuíno do processo e preservar a causa real no código
-             * de saída em vez de mascará-la como '1' sempre. */
             _exit(128 + sig);
         }
         _exit(WIFEXITED(st) ? WEXITSTATUS(st) : 1);
@@ -759,7 +730,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
             mount(NULL, dst_wayland, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
         }
 
-        /* Set GUI Environment Variables — herda do host se presente, senão usa fallback */
+        /* Set GUI Environment Variables */
         const char *h_wayland = getenv("WAYLAND_DISPLAY");
         setenv("WAYLAND_DISPLAY", (h_wayland && *h_wayland) ? h_wayland : "wayland-0", 1);
 
@@ -780,12 +751,12 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
         fprintf(stderr, "[KERNEL ERROR] Function: %s | Syscall: pivot_root('%s') | Error: %s (%d)\n", __func__, v->path, strerror(err), err);
         _exit(-ERR_SYSTEM_PIVOT_ROOT_FAILED);
     }
-    /* /dev sintético — isola do host imediatamente após o pivot */
+    /* Synthetic /dev — isolates from host immediately post-pivot */
     vsb_mount_dev();
-   vsb_prepare_mounts();
+    vsb_prepare_mounts();
 
     /* [Layer 4] Drop capabilities */
-   if (vsb_drop_caps() != 0)
+    if (vsb_drop_caps() != 0)
     {
         int err = errno;
         fprintf(stderr, "[SANDBOX][FATAL] drop capabilities failed: %s (Kernel code %d)\n", strerror(err), err);
@@ -805,8 +776,7 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
     if (gui_mode && app_cmd && app_cmd[0] != '\0') {
         vault_log(LOG_INFO, "[SANDBOX] Launching GUI App: %s", app_cmd);
         
-        /* Parse simple args. In a real shell, we'd use wordexp or /bin/sh -c */
-        /* For now, just pass to /bin/sh -c so it inherits the PATH from /usr/bin */
+        /* Parse simple args */
         execl("/bin/sh", "sh", "-c", app_cmd, NULL);
         
         int err = errno;
@@ -826,12 +796,11 @@ VaultErrorr vault_sandbox_open(Vault *v, const char *password, bool gui_mode, co
 /* ─────────────────────────────────────────────────────────────────────────
  * vault_isolate_path_readonly — bind-mount + remount readonly
  *
- * Isola um caminho arbitrário (não necessariamente um vault catalogado)
- * tornando-o readonly em nível de kernel via bind mount, em vez de apenas
- * chmod (que não impede escrita por processos com CAP_DAC_OVERRIDE).
+ * Isolates an arbitrary path making it read-only at kernel level via
+ * bind mount.
  *
- * Requer CAP_SYS_ADMIN. Retorna 0 em success, -1 em falha (ver errno).
- * ───────────── */
+ * Requires CAP_SYS_ADMIN. Returns 0 on success, -1 on failure.
+ * ───────────────────────────────────────────────────────────────────────── */
 int vault_isolate_path_readonly(const char *path)
 {
     if (path == NULL)
@@ -848,7 +817,7 @@ int vault_isolate_path_readonly(const char *path)
     if (mount(path, path, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) != 0)
     {
         int saved_errno = errno;
-        umount(path); /* desfaz o bind se o remount readonly falhar */
+        umount(path); /* undo bind if remount readonly fails */
         errno = saved_errno;
         return -1;
     }

@@ -123,7 +123,7 @@ int mount_overlay(const char *upper, const char *work, const char *lower,
     if (ensure_dir(work)   == -1) return -1;
     if (ensure_dir(merged) == -1) return -1;
 
-    /* Tamanho dinâmico: 4 paths de até VAULT_PATH_MAX + prefixos de chaves.
+    /* Tamanho dinmico: 4 paths de até VAULT_PATH_MAX + prefixos de chaves.
      * Truncamento checado explicitamente — snprintf silencioso passaria
      * opções corrompidas direto para mount(). */
     char opts[4 * VAULT_PATH_MAX + 128];

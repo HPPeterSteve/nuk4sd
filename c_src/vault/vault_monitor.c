@@ -112,17 +112,9 @@ static void flash_credit_reduce(Vault *v, FileBucket *fb, const char *evname)
 }
 
 /*
- * [FIX-7] suspect_access() era chamada mas nunca existia em nenhum arquivo
- * do projeto — o build quebrava no link (undefined reference), e o gcc
- * silenciosamente assumia um "int" implícito, o que corromperia o
- * ponteiro FileEntry* caso alguém desligasse -Werror.
- *
- * Este stub é INTENCIONALMENTE conservador: sempre retorna NULL (nunca
- * marca como suspeito), só pra parar o crash/undefined behavior e deixar
- * o projeto linkável. A heurística real de "o que é um acesso suspeito"
- * (ex: taxa de acesso anômala, muitos arquivos diferentes em pouco tempo,
- * acesso fora do --hours configurado) ainda precisa ser escrita — é
- * decisão de produto, não algo que dá pra inventar aqui.
+ * [FIX-7] suspect_access() stub
+ * Conservative stub: always returns NULL (never flags as suspect) to ensure
+ * clean linkage. Real suspicious access heuristics can be implemented as required.
  */
 static FileEntry *suspect_access(Vault *v, FileEntry *e, time_t now)
 {
@@ -421,15 +413,15 @@ VaultErrorr alert_resolve(uint32_t id, const char *password)
 
     /* Clear modified flags */
     for (int b = 0; b < HASHMAP_BUCKETS; b++)
-        // [FIX-5] Limpa a flag modified de todas as entradas do hashmap, não apenas das modificadas.
+        // [FIX-5] Clears modified flag from all hashmap entries, not just modified ones.
         for (FileEntry *e = v->hashmap.buckets[b]; e; e = e->next)
             e->modified = false;
-         // [FIX-5] Reseta o estado de alerta e escalonamento, não apenas a razão.
+         // [FIX-5] Resets alert and escalation state, not just reason.
          memset(&v->alert, 0, sizeof(v->alert));
          v->status = VAULT_STATUS_OK; 
          vault_enforce_readonly(v);
-          // [FIX-5] Log de resolução de alerta, incluindo o motivo original.
-          // restaura permissão chmod para 0700 para permitir operações autorizadas.
+          // [FIX-5] Log alert resolution, including original reason.
+          // Restores chmod permission to 0700 to allow authorized operations.
         chmod(v->path, 0700);
         vault_log(LOG_INFO, "Vault '%s' (id=%u) set to READ-ONLY mode after alert resolution", v->name, v->id);
 
@@ -652,9 +644,8 @@ void *monitor_thread(void *arg)
         }
 
         /* Periodic alert escalation check
-        * este alerta foi implementado depois das versões 1.0 
-        mas não é tão util para maioria dos casos 
-        */
+         * (Implemented post v1.0 releases)
+         */
         for (uint32_t i = 0; i < ctx->catalog->count; i++)
             alert_check_escalation(&ctx->catalog->vaults[i]);
 

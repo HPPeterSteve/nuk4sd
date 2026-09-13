@@ -1,16 +1,16 @@
 /*
  * repl.rs
  *
- * Nuk4sd — modo interativo (REPL)
+ * Nuk4sd — interactive mode (REPL)
  *
- * Chamado pelo main.rs quando não há argumentos CLI.
- * Lê comandos linha a linha e converte para argc/argv
- * que são passados ao vault_cli_parse_and_exec do core C.
+ * Invoked by main.rs when no CLI arguments are provided.
+ * Reads commands line by line and converts to argc/argv
+ * which are passed to vault_cli_parse_and_exec in the C core.
  *
- * Comandos especiais do REPL (não passam pelo core C):
- *   help      → imprime ajuda rápida
- *   exit/quit → saída
- *   !<cmd>    → executa shell command
+ * Special REPL commands (do not pass to C core):
+ *   help      → prints quick help
+ *   exit/quit → exit
+ *   !<cmd>    → executes shell command
  */
 
 use colored::*;
@@ -45,7 +45,7 @@ pub fn run() {
                 match input {
                     "exit" | "quit" => break,
 
-                    /* Shell passthrough: !ls, !cat arquivo, etc. */
+                    /* Shell passthrough: !ls, !cat file, etc. */
                     s if s.starts_with('!') => {
                         let cmd = &s[1..];
                         let _ = std::process::Command::new("sh")
@@ -54,15 +54,15 @@ pub fn run() {
                             .status();
                     }
 
-                    /* Tudo mais vai pro core C como se fosse argv CLI */
+                    /* Everything else goes to C core as if CLI argv */
                     _ => {
-                        /* Tokeniza respeitando aspas simples e duplas */
+                        /* Tokenizes respecting single and double quotes */
                         let tokens = tokenize(input);
                         if tokens.is_empty() {
                             continue;
                         }
 
-                        /* Prefixa com "Nuk4sd" para simular argv[0] */
+                        /* Prefix with "Nuk4sd" to simulate argv[0] */
                         let mut full: Vec<String> =
                             vec!["Nuk4sd".to_string()];
                         full.extend(tokens);
@@ -99,15 +99,15 @@ pub fn run() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- *  Tokenizador simples — respeita aspas simples e duplas
- * ───────────── */
+ *  Simple Tokenizer — respects single and double quotes
+ * ───────────────────────────────────────────────────────────────────────── */
 fn tokenize(input: &str) -> Vec<String> {
-    /* Colapsa continuação de linha estilo shell: um '\' seguido
-     * (com espaços em branco opcionais) por '\n' ou '\r\n' é
-     * descartado, junto com a quebra de linha, em vez de virar
-     * um token literal "\". Isso permite colar comandos
-     * multi-linha (paste com '\' no fim de cada linha) sem que
-     * a barra sobre como argumento espúrio para o exec. */
+    /* Collapses shell-style line continuation: a '\' followed
+     * (with optional whitespace) by '\n' or '\r\n' is
+     * discarded along with the line break instead of becoming
+     * a literal "\" token. This allows pasting multi-line
+     * commands (paste with '\' at the end of each line) without
+     * trailing slashes being passed as spurious arguments to exec. */
     let mut normalized = String::with_capacity(input.len());
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0;

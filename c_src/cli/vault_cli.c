@@ -1,20 +1,20 @@
 /*
  * vault_cli.c
  *
- * Nuk4sd — CLI flag parser completo (estilo bwrap)
+ * Nuk4sd  Full CLI flag parser (bwrap style)
  *
- * Ponto de entrada único: vault_cli_parse_and_exec(argc, argv)
- * Parseia todas as flags via getopt_long e despacha ao core C.
+ * Single entry point: vault_cli_parse_and_exec(argc, argv)
+ * Parses all flags via getopt_long and dispatches to C core.
  *
- * Flags de isolamento usam os wrappers públicos vsb_* de vault_sandbox.c:
- *   vsb_drop_caps()         → sandbox_drop_caps()
- *   vsb_apply_seccomp()     → apply_seccomp_policy()
- *   vsb_pivot_root()        → sandbox_pivot_root()
- *   vsb_prepare_mounts()    → sandbox_prepare_mounts()
- *   vsb_write_uid_gid_map() → sandbox_write_uid_gid_map()
- *   vsb_prepare_jail()      → vault_prepare_jail()
+ * Isolation flags use vsb_* public wrappers from vault_sandbox.c:
+ *   vsb_drop_caps()         ’ sandbox_drop_caps()
+ *   vsb_apply_seccomp()     ’ apply_seccomp_policy() [allowlist: default EPERM]
+ *   vsb_pivot_root()        ’ sandbox_pivot_root()
+ *   vsb_prepare_mounts()    ’ sandbox_prepare_mounts()
+ *   vsb_write_uid_gid_map() ’ sandbox_write_uid_gid_map()
+ *   vsb_prepare_jail()      ’ vault_prepare_jail()
  *
- * Uso:
+ * Usage:
  *   Nuk4sd --ls
  *   Nuk4sd --vault 3 --encrypt
  *   Nuk4sd --vault 3 --scan --verbose
@@ -33,7 +33,7 @@
 #include "preset.h"
 #include "sandbox.h"
 #include "vault_health.h"
-// Adiciona temporariamente em vault_cli.c, no início do main ou do parse_flags:
+#include "common.h"
 
 #include <getopt.h>
 #include <pwd.h>
@@ -44,24 +44,72 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <fcntl.h>
-#include <ftw.h>        /* FIX #1: nftw() para rm -rf seguro */
+#include <ftw.h>        /* FIX #1: nftw() for safe rm -rf */
+#include <arpa/inet.h>
+#include <ctype.h>
 #include "container.h"
 
-/* ── OCI / Cgroup callbacks implemented in Rust (ffi.rs) ───────────────────
- * Exposed via #[no_mangle] extern "C" — linked through the same static
+/*  OCI / Cgroup callbacks implemented in Rust (ffi.rs) 
+ * Exposed via #[no_mangle] extern "C"  linked through the same static
  * libvault_security.a produced by build.rs. */
 extern int rust_oci_pull_image(const char *url_or_alias, const char *target_dir);
 extern int rust_cgroup_apply(const char *cgroup_name,
                              unsigned long long pid,
                              long long memory_limit_mb,
-                             unsigned long long cpu_shares);
+                             unsigned long long cpu_shares,
+                             long long cpu_quota_us,
+                             long long max_procs);
+extern int rust_cgroup_cleanup(const char *cgroup_name);
+extern int rust_vault_add(const char *vault_path, const char *src_file, bool recursive, bool replace, bool preserve);
+extern int rust_vault_extract(const char *vault_path, const char *rel_file, const char *dest_dir, bool force);
+extern int rust_vault_mv(const char *vault_path, const char *src_rel, const char *dst_rel);
+extern int rust_vault_cp(const char *vault_path, const char *src_rel, const char *dst_rel);
+extern int rust_vault_rm_file(const char *vault_path, const char *target_rel);
+extern int rust_vault_mkdir(const char *vault_path, const char *dir_rel);
+extern int rust_vault_rmdir(const char *vault_path, const char *dir_rel);
+extern int rust_vault_tree(const char *vault_path);
+extern int rust_vault_du(const char *vault_path);
+extern int rust_vault_find(const char *vault_path, const char *pattern);
+extern int rust_vault_snapshot(const char *vault_path, const char *tag);
+extern int rust_vault_snapshots(const char *vault_path);
+extern int rust_vault_snapshot_delete(const char *vault_path, const char *tag);
+extern int rust_vault_snapshot_restore(const char *vault_path, const char *tag);
+extern int rust_vault_snapshot_diff(const char *vault_path, const char *tag1, const char *tag2);
+/* Cryptographic Integrity */
+extern int rust_vault_hash(const char *vault_path, const char *target_rel);
+extern int rust_vault_baseline(const char *vault_path);
+extern int rust_vault_verify(const char *vault_path);
+extern int rust_vault_integrity(const char *vault_path);
+extern int rust_vault_repair(const char *vault_path);
+extern int rust_vault_diff(const char *vault_path, const char *other);
+/* Backup & Import */
+extern int rust_vault_backup(const char *vault_path, const char *out_archive);
+extern int rust_vault_restore(const char *vault_path, const char *in_archive);
+extern int rust_vault_import(const char *vault_path, const char *src);
+/* Lock */
+extern int rust_vault_lock(const char *vault_path);
+extern int rust_vault_lock_status(const char *vault_path);
+extern int rust_vault_force_unlock(const char *vault_path);
+/* Key Lifecycle */
+extern int rust_vault_key_info(const char *vault_path);
+extern int rust_vault_key_rotate(const char *vault_path, const char *old_pass, const char *new_pass);
+extern int rust_vault_rekey(const char *vault_path, const char *pass);
+/* Observability */
+extern int rust_vault_stats(const char *vault_path);
+extern int rust_vault_usage(const char *vault_path);
+extern int rust_vault_inspect(const char *vault_path, const char *rel_file);
+extern int rust_vault_history(const char *vault_path);
+extern int rust_vault_events(const char *vault_path);
 
 #ifdef __linux__
 #include <sched.h>
+#ifndef CLONE_NEWCGROUP
+#define CLONE_NEWCGROUP 0x02000000
 #endif
-/* ── FIX #1: rm_rf_nftw — substitui system("rm -rf") ─────────────────────
- * nftw() com FTW_PHYS não segue symlinks durante a travessia, bloqueando
- * qualquer path traversal via symlinks criados dentro do rootfs. */
+#endif
+/*  FIX #1: rm_rf_nftw  replaces system("rm -rf") 
+ * nftw() with FTW_PHYS does not follow symlinks during traversal, blocking
+ * any path traversal via symlinks created inside rootfs. */
 #ifdef __linux__
 static int _rm_rf_cb(const char *path, const struct stat *sb,
                      int typeflag, struct FTW *ftwbuf)
@@ -74,14 +122,12 @@ static int rm_rf_safe(const char *path) {
 }
 #endif
 
-/* forward decl (load_profile helper) */
-
-/* forward decl — usada pelo loader de --profile (load_profile), definida
- * mais abaixo junto com o resto dos helpers de bind mount */
+/* forward decl  used by --profile loader (load_profile), defined below
+ * with remaining bind mount helpers */
 static void cli_expand_tilde(const char *in, char *out, size_t out_sz);
 
 /*
- *  WORM bits — espelha vault_core.h
+ *  WORM bits  mirrors vault_core.h
  * */
 #ifndef WORM_PROTECT_DELETE
 #define WORM_PROTECT_DELETE  (1u << 0)
@@ -92,13 +138,11 @@ static void cli_expand_tilde(const char *in, char *out, size_t out_sz);
 #endif
 
 /*
- *  Bind-mount entry para --ro / --rw / --blacklist
+ *  Bind-mount entry for --ro / --rw / --blacklist
  * */
-/* As estruturas BindEntry e CliConfig foram movidas para preset.h
- * para permitir o uso pelo módulo preflight_scan. */
 
 /*
- *  Enum de opções longas
+ *  Long options enum
  * */
 enum {
     OPT_VAULT = 1000,
@@ -120,7 +164,7 @@ enum {
     OPT_IMAGE,
     /* run */
     OPT_RUN,
-    /* isolamento básico */
+    /* basic isolation */
     OPT_NO_NET, OPT_WAYLAND, OPT_X11,
     OPT_RO_HOME, OPT_RW_HOME, OPT_NO_DBUS, OPT_TMP_HOME,
     OPT_RO, OPT_RW, OPT_BLACKLIST,
@@ -132,23 +176,88 @@ enum {
     OPT_DEV, OPT_MOUNT_DEV, OPT_NO_SECCOMP, OPT_CHROOT, OPT_PIVOT_ROOT,
     OPT_DISPLAY_OPT, OPT_WAYLAND_DISPLAY,
     OPT_PRESET,
-    /* limites de recurso */
+    /* resource limits */
     OPT_MAX_PROCS, OPT_MAX_MEM, OPT_MAX_FSIZE, OPT_MAX_FDS, OPT_TMP_SIZE,
-    /* gerais */
+    /* general */
     OPT_PASSWORD, OPT_VERBOSE, OPT_JSON, OPT_VERSION, OPT_HELP,
     /* strict seccomp */
     OPT_SECCOMP_STRICT = 'q',
     OPT_ALLOW_CLONE3   = 'k',
-    /* seccomp permissivo (Fase 1 do roadmap --friendly-sandbox) */
+    /* permissive seccomp */
     OPT_FRIENDLY_SANDBOX,
-    /* Fase 2 do roadmap: deixa o app GUI montar o PRÓPRIO sandbox interno */
+    /* Phase 2 roadmap: allows GUI app to mount its own internal sandbox */
     OPT_PERMISSIVE_SANDBOX,
-    /* Desativa o auto-scanner de dependências (preflight_scan / ldd) */
+    /* Disables dependency auto-scanner (preflight_scan / ldd) */
     OPT_NO_PREFLIGHT,
-    /* Pula a etapa de montagem FUSE do vault */
+    /* Skips vault FUSE mount stage */
     OPT_NO_FUSE,
-    /* Inspeciona isolamento de um PID em execução */
+    /* Inspects isolation of a running PID */
     OPT_HEALTH,
+    /* network, firewall and supervision options */
+    OPT_UUID,
+    OPT_NET_VETH,
+    OPT_NFILTER,
+    OPT_ALLOW_IP,
+    OPT_INIT,
+    OPT_ADAPTER,
+    /* cgroups v1/v2 */
+    OPT_CGROUP,
+    OPT_CGROUP_NAME,
+    OPT_CPU_SHARES,
+    OPT_CPU_QUOTA,
+    OPT_CGROUP_MEM,
+    /* Vault file operations */
+    OPT_ADD,
+    OPT_RECURSIVE,
+    OPT_REPLACE,
+    OPT_PRESERVE,
+    OPT_EXTRACT,
+    OPT_FORCE,
+    OPT_MV,
+    OPT_CP,
+    OPT_RM_FILE,
+    OPT_MKDIR,
+    OPT_RMDIR,
+    OPT_TREE,
+    OPT_DU,
+    OPT_FIND,
+    /* Snapshots & Immutable Versioning */
+    OPT_SNAPSHOT,
+    OPT_SNAPSHOTS,
+    OPT_SNAPSHOT_DELETE,
+    OPT_SNAPSHOT_RESTORE,
+    OPT_SNAPSHOT_DIFF,
+    /* Cryptographic Integrity */
+    OPT_HASH,
+    OPT_BASELINE,
+    OPT_VERIFY,
+    OPT_INTEGRITY,
+    OPT_REPAIR,
+    OPT_DIFF,
+    /* Backup & Import */
+    OPT_BACKUP,
+    OPT_RESTORE_ARCH,
+    OPT_IMPORT,
+    /* Lock/Unlock */
+    OPT_LOCK,
+    OPT_LOCK_STATUS,
+    OPT_FORCE_UNLOCK,
+    /* Key Lifecycle */
+    OPT_KEY_INFO,
+    OPT_KEY_ROTATE,
+    OPT_REKEY,
+    /* Observability */
+    OPT_STATS,
+    OPT_USAGE,
+    OPT_INSPECT,
+    OPT_HISTORY,
+    OPT_EVENTS,
+    /* MAC AppArmor */
+    OPT_APP_ARMOR,
+    OPT_MAC_ENABLE,
+    OPT_DISABLE_APPARMOR,
+    OPT_MAC_STATUS,
+    OPT_GENERATE_SECRET,
 };
 
 static const struct option long_options[] = {
@@ -191,6 +300,11 @@ static const struct option long_options[] = {
     { "image",           required_argument, NULL, OPT_IMAGE },
     { "run",             required_argument, NULL, OPT_RUN },
     { "no-net",          no_argument,       NULL, OPT_NO_NET },
+    { "net-veth",        optional_argument, NULL, OPT_NET_VETH },
+    { "nfilter",         optional_argument, NULL, OPT_NFILTER },
+    { "allow-ip",        required_argument, NULL, OPT_ALLOW_IP },
+    { "uuid",            no_argument,       NULL, OPT_UUID },
+    { "init",            no_argument,       NULL, OPT_INIT },
     { "wayland",         no_argument,       NULL, OPT_WAYLAND },
     { "x11",             no_argument,       NULL, OPT_X11 },
     { "ro-home",         no_argument,       NULL, OPT_RO_HOME },
@@ -220,14 +334,14 @@ static const struct option long_options[] = {
     { "display",         required_argument, NULL, OPT_DISPLAY_OPT },
     { "wayland-display", required_argument, NULL, OPT_WAYLAND_DISPLAY },
     { "preset",          required_argument, NULL, OPT_PRESET },
-    /* limites de recurso */
+    /* resource limits */
     { "max-procs",       required_argument, NULL, OPT_MAX_PROCS },
     { "max-mem",         required_argument, NULL, OPT_MAX_MEM },
     { "max-filesize",    required_argument, NULL, OPT_MAX_FSIZE },
     { "max-fds",         required_argument, NULL, OPT_MAX_FDS },
     { "tmp-size",        required_argument, NULL, OPT_TMP_SIZE },
-    { "help",            no_argument, NULL, OPT_HELP },
-    /* gerais */
+    { "help",            no_argument,       NULL, OPT_HELP },
+    /* general */
     { "password",        required_argument, NULL, OPT_PASSWORD },
     { "verbose",         no_argument,       NULL, OPT_VERBOSE },
     { "json",            no_argument,       NULL, OPT_JSON },
@@ -236,18 +350,74 @@ static const struct option long_options[] = {
     { "allow-clone3",    no_argument,       NULL, 'k' },
     { "friendly-sandbox", no_argument,      NULL, OPT_FRIENDLY_SANDBOX },
     { "permissive",       no_argument,      NULL, OPT_PERMISSIVE_SANDBOX },
+    { "adapter",          required_argument, NULL, OPT_ADAPTER },
     { "no-preflight",     no_argument,      NULL, OPT_NO_PREFLIGHT },
     { "no-fuse",          no_argument,      NULL, OPT_NO_FUSE },
     { "health",           required_argument, NULL, OPT_HEALTH },
+    /* cgroups v1/v2 */
+    { "cgroup",           optional_argument, NULL, OPT_CGROUP },
+    { "cgroup-name",      required_argument, NULL, OPT_CGROUP_NAME },
+    { "cpu-shares",       required_argument, NULL, OPT_CPU_SHARES },
+    { "cpu-quota",        required_argument, NULL, OPT_CPU_QUOTA },
+    { "cgroup-mem",       required_argument, NULL, OPT_CGROUP_MEM },
+    /* Vault file operations */
+    { "add",              required_argument, NULL, OPT_ADD },
+    { "recursive",        no_argument,       NULL, OPT_RECURSIVE },
+    { "replace",          no_argument,       NULL, OPT_REPLACE },
+    { "preserve",         no_argument,       NULL, OPT_PRESERVE },
+    { "extract",          required_argument, NULL, OPT_EXTRACT },
+    { "force",            no_argument,       NULL, OPT_FORCE },
+    { "mv",               required_argument, NULL, OPT_MV },
+    { "cp",               required_argument, NULL, OPT_CP },
+    { "rm-file",          required_argument, NULL, OPT_RM_FILE },
+    { "mkdir",            required_argument, NULL, OPT_MKDIR },
+    { "rmdir",            required_argument, NULL, OPT_RMDIR },
+    { "tree",             no_argument,       NULL, OPT_TREE },
+    { "du",               no_argument,       NULL, OPT_DU },
+    { "find",             required_argument, NULL, OPT_FIND },
+    /* Snapshots & Immutable Versioning */
+    { "snapshot",         optional_argument, NULL, OPT_SNAPSHOT },
+    { "snapshots",        no_argument,       NULL, OPT_SNAPSHOTS },
+    { "snapshot-delete",  required_argument, NULL, OPT_SNAPSHOT_DELETE },
+    { "snapshot-restore", required_argument, NULL, OPT_SNAPSHOT_RESTORE },
+    { "snapshot-diff",    required_argument, NULL, OPT_SNAPSHOT_DIFF },
+    /* Cryptographic Integrity */
+    { "hash",             optional_argument, NULL, OPT_HASH },
+    { "baseline",         no_argument,       NULL, OPT_BASELINE },
+    { "verify",           no_argument,       NULL, OPT_VERIFY },
+    { "integrity",        no_argument,       NULL, OPT_INTEGRITY },
+    { "repair",           no_argument,       NULL, OPT_REPAIR },
+    { "diff",             optional_argument, NULL, OPT_DIFF },
+    /* Backup & Import */
+    { "backup",           optional_argument, NULL, OPT_BACKUP },
+    { "restore-arch",     required_argument, NULL, OPT_RESTORE_ARCH },
+    { "import",           required_argument, NULL, OPT_IMPORT },
+    { "lock",             no_argument,       NULL, OPT_LOCK },
+    { "lock-status",      no_argument,       NULL, OPT_LOCK_STATUS },
+    { "force-unlock",     no_argument,       NULL, OPT_FORCE_UNLOCK },
+    { "key-info",         no_argument,       NULL, OPT_KEY_INFO },
+    { "key-rotate",       required_argument, NULL, OPT_KEY_ROTATE },
+    { "rekey",            no_argument,       NULL, OPT_REKEY },
+    /* Observability */
+    { "stats",            no_argument,       NULL, OPT_STATS },
+    { "usage",            no_argument,       NULL, OPT_USAGE },
+    { "inspect",          required_argument, NULL, OPT_INSPECT },
+    { "history",          no_argument,       NULL, OPT_HISTORY },
+    { "events",           no_argument,       NULL, OPT_EVENTS },
+    { "app-armor",         required_argument, NULL, OPT_APP_ARMOR },
+    { "mac-enable",        no_argument,       NULL, OPT_MAC_ENABLE },
+    { "disable-apparmor",  optional_argument, NULL, OPT_DISABLE_APPARMOR },
+    { "mac-status",        no_argument,       NULL, OPT_MAC_STATUS },
+    { "generate-secret",   no_argument,       NULL, OPT_GENERATE_SECRET },
     { NULL, 0, NULL, 0 }
 };
 
 /*
  *  Helpers
  * */
-static void print_ok(const char *msg)   { printf("\033[32m✔ %s\033[0m\n", msg); }
-static void print_err(const char *msg)  { fprintf(stderr, "\033[31m✖ %s\033[0m\n", msg); }
-static void print_warn(const char *msg) { fprintf(stderr, "\033[33m⚠ %s\033[0m\n", msg); }
+static void print_ok(const char *msg)   { printf("\033[32mœ %s\033[0m\n", msg); }
+static void print_err(const char *msg)  { fprintf(stderr, "\033[31mœ– %s\033[0m\n", msg); }
+static void print_warn(const char *msg) { fprintf(stderr, "\033[33mš  %s\033[0m\n", msg); }
 
 static char *read_password_silent(const char *prompt) {
     static char buf[256];
@@ -275,161 +445,602 @@ static char *read_password_silent(const char *prompt) {
  * */
 static void print_help(void) {
     printf(
-"\nNuk4sd — hardened vault & isolation engine\n"
-"Usage: Nuk4sd [--vault <id>] <operation> [flags]\n\n"
+"\nNuk4sd  hardened vault & isolation engine\n"
+"Usage: nuk4sd [--vault <id>] <operation> [flags]\n\n"
 
-"── Vault ──────────────────────────────────────────────────────────\n"
-"  --ls                         list all vaults\n"
-"  --vault <id>                 select vault\n"
-"    --info                     show full details\n"
-"    --files                    list tracked files + SHA-256 hashes\n"
-"    --status                   quick status (OK/LOCKED/ALERT/DELETED)\n"
-"    --scan                     SHA-256 integrity scan\n"
-"    --encrypt                  encrypt all files (AES-256-GCM)\n"
-"    --decrypt                  decrypt all files\n"
-"    --resolve                  resolve active integrity alert\n"
-"    --mount                    mount vault via FUSE\n"
-"    --umount                   unmount FUSE\n"
-"    --export [--file <f>]      rescue file(s) from vault\n"
-"      --dest <dir>             destination directory\n"
-"    --mount-export             rescue from PROTECTED-SCAN vault (bypass FUSE)\n"
-"    --rm                       delete vault (irreversible)\n"
-"    --rename <name>            rename vault in catalog\n"
-"    --unlock                   unlock after failed-attempt lockout\n"
-"    --passwd                   change vault password (PBKDF2)\n"
-"    --rule <n>                 add security rule (n = max password fails)\n"
-"      --hours <from>-<to>      time window e.g. --hours 9-18\n\n"
+" Vault Management \n"
+"  --ls\n"
+"    List all registered vaults with their id, name, status and path.\n\n"
 
-"── Create ─────────────────────────────────────────────────────────\n"
-"  --new <name>                 create new vault\n"
-"    --path <dir>               vault directory (default: catalog location)\n"
-"    --protected                require password (AES-256-GCM + PBKDF2)\n"
-"    --engine <0-5>             obfuscation engine level\n"
-"                               0 = none  1 = 1 layer + decoys\n"
-"                               2 = 3 layers  3 = 6 layers\n"
-"                               4 = 16 layers + fake .enc\n"
-"                               5 = 20 layers + fake .enc\n\n"
+"  --new <name>\n"
+"    Create a new vault with the given name and register it in the catalog.\n\n"
 
-"── WORM Protection ────────────────────────────────────────────────\n"
-"  --vault <id> --worm-status           show active WORM flags\n"
-"  --vault <id> --protect-delete        block unlink/rmdir → EPERM\n"
-"  --vault <id> --protect-rename        block rename → EPERM\n"
-"  --vault <id> --protect-write         block write on existing files → EPERM\n"
-"  --vault <id> --protect-read          block read → EPERM\n"
-"  --vault <id> --protected-scan        MAX protection (irreversible, use mount-export to rescue)\n"
-"  --vault <id> --clear-delete          remove delete block\n"
-"  --vault <id> --clear-rename          remove rename block\n"
-"  --vault <id> --clear-write           remove write block\n"
-"  --vault <id> --clear-read            remove read block\n\n"
+"    --path <dir>\n"
+"      Directory where the vault files will be stored.\n"
+"      Defaults to the catalog directory if omitted.\n\n"
 
-"── Container Whitelist ────────────────────────────────────────────\n"
-"  --vault <id> --white-list -e         exclude whitelist (block sealed ops)\n"
-"  --vault <id> --white-list -r         restore whitelist (allow sealed ops)\n\n"
+"    --protected\n"
+"      Require a password to access the vault.\n"
+"      Encryption is AES-256-GCM, key derived via PBKDF2-SHA256.\n\n"
 
-"── Image & Container Runtime ──────────────────────────────────────\n"
-"  --image <url|alpine|ubuntu>          baixar rootfs externo antes do run\n\n"
+"    --engine <0-5>\n"
+"      Obfuscation level applied to the vault directory structure.\n"
+"        0  none (plain layout)\n"
+"        1  1 obfuscation layer + decoy files\n"
+"        2  3 obfuscation layers\n"
+"        3  6 obfuscation layers\n"
+"        4  16 layers + fake files\n"
+"        5  20 layers + fake files (maximum)\n\n"
 
-"── Run Program in Vault Sandbox ───────────────────────────────────\n"
-"  --vault <id> --run <exec> [-- exec-args...]\n\n"
+"  --vault <id>\n"
+"    Select a specific vault by numeric id for subsequent operations.\n\n"
+
+"    --info\n"
+"      Display full vault details: id, name, path, status, encryption\n"
+"      parameters, salt, creation time and security rules.\n\n"
+
+"    --files\n"
+"      List all files tracked inside the vault with their SHA-256 hashes.\n\n"
+
+"    --status\n"
+"      Quick one-line status: OK / LOCKED / ALERT / DELETED.\n\n"
+
+"    --scan\n"
+"      SHA-256 integrity scan of all tracked vault files.\n"
+"      Reports missing, modified or unexpected files.\n\n"
+
+"    --encrypt\n"
+"      Encrypt all files in the vault with AES-256-GCM.\n"
+"      Files are re-keyed from the vault password + PBKDF2 salt.\n\n"
+
+"    --decrypt\n"
+"      Decrypt all AES-256-GCM encrypted files in the vault.\n\n"
+
+"    --resolve\n"
+"      Acknowledge and clear an active integrity alert on the vault.\n\n"
+
+"    --mount\n"
+"      Mount the vault as a FUSE filesystem at its configured mountpoint.\n"
+"      AppArmor profile is loaded automatically if mac_mode is enabled.\n\n"
+
+"    --umount\n"
+"      Unmount the FUSE filesystem. AppArmor profile is removed.\n\n"
+
+"    --export [--file <f>]\n"
+"      Rescue file(s) from the vault to a local directory.\n"
+"      Use --file to rescue a specific file, omit for all files.\n\n"
+
+"      --dest <dir>\n"
+"        Destination directory for the exported files.\n\n"
+
+"    --mount-export\n"
+"      Rescue files from a PROTECTED-SCAN vault, bypassing the FUSE layer.\n"
+"      Required when the vault is in maximum protection mode.\n\n"
+
+"    --rm\n"
+"      Permanently delete the vault and all its files. Irreversible.\n\n"
+
+"    --rename <name>\n"
+"      Rename the vault in the catalog. Does not move files on disk.\n\n"
+
+"    --unlock\n"
+"      Unlock a vault that was locked due to too many failed password attempts.\n\n"
+
+"    --passwd\n"
+"      Interactively change the vault password. All .enc files are re-keyed.\n\n"
+
+"    --rule <n>\n"
+"      Set security rule: lock vault after n failed password attempts.\n\n"
+
+"      --hours <from>-<to>\n"
+"        Restrict access to a time window, e.g. --hours 9-18\n"
+"        Access outside this range is denied.\n\n"
+
+" Vault Filesystem (Anti-TOCTOU Secure Operations) \n"
+"  --add <file>\n"
+"    Add a file or directory to the vault with atomic, TOCTOU-safe ops.\n\n"
+
+"    --recursive\n"
+"      Include subdirectories recursively when adding a directory.\n\n"
+
+"    --replace\n"
+"      Replace an existing file in the vault instead of rejecting the add.\n\n"
+
+"    --preserve\n"
+"      Preserve the file's original permissions, ownership and timestamps.\n\n"
+
+"  --extract <file>\n"
+"    Extract a file or folder from the vault to a local path.\n\n"
+
+"    --dest <dir>\n"
+"      Destination directory for the extracted file (default: current dir).\n\n"
+
+"    --force\n"
+"      Overwrite existing files at the destination without prompting.\n\n"
+
+"  --mv <src> <dest>\n"
+"    Move or rename a file inside the vault. Both paths are vault-relative.\n\n"
+
+"  --cp <src> <dest>\n"
+"    Copy a file inside the vault. Both paths are vault-relative.\n\n"
+
+"  --rm-file <file>\n"
+"    Remove a specific file from the vault.\n\n"
+
+"  --mkdir <dir>\n"
+"    Create a directory inside the vault.\n\n"
+
+"  --rmdir <dir>\n"
+"    Remove an empty directory from the vault.\n\n"
+
+"  --tree\n"
+"    Display the vault directory structure as a formatted file tree.\n\n"
+
+"  --du\n"
+"    Show disk space usage broken down by vault region.\n\n"
+
+"  --find <pattern>\n"
+"    Search for files and folders inside the vault matching the given glob\n"
+"    pattern. Case-sensitive. Supports * and ? wildcards.\n\n"
+
+" Snapshots & Immutable Versioning \n"
+"  --snapshot [tag]\n"
+"    Create an immutable snapshot of the current vault state.\n"
+"    Optionally label it with a human-readable tag.\n\n"
+
+"  --snapshots\n"
+"    List all existing snapshots with their tags and creation timestamps.\n\n"
+
+"  --snapshot-delete <tag>\n"
+"    Permanently delete a specific snapshot by tag. Irreversible.\n\n"
+
+"  --snapshot-restore <tag>\n"
+"    Restore the vault to the state captured in the given snapshot.\n\n"
+
+"  --snapshot-diff <tag1> [tag2]\n"
+"    Compare differences between a snapshot and the current vault state,\n"
+"    or between two snapshots if tag2 is provided.\n\n"
+
+" Cryptographic Integrity \n"
+"  --hash [file]\n"
+"    Compute SHA-256 of a specific vault file, or of the entire vault\n"
+"    if no file is given.\n\n"
+
+"  --baseline\n"
+"    Generate a cryptographic baseline file (.vault_baseline) recording\n"
+"    the SHA-256 of every tracked file at this point in time.\n\n"
+
+"  --verify\n"
+"    Verify the current vault state against the saved baseline.\n"
+"    Reports any file that was added, removed or modified.\n\n"
+
+"  --integrity\n"
+"    Structural audit: validates .enc file headers and checks for\n"
+"    broken or unexpected symlinks inside the vault.\n\n"
+
+"  --repair\n"
+"    Attempt to repair corrupted files by restoring from the latest snapshot.\n\n"
+
+"  --diff [other-vault-path]\n"
+"    Compare the vault against its baseline, or against another vault\n"
+"    directory if a path is provided.\n\n"
+
+" Backup & Portability \n"
+"  --backup [out.tar.gz]\n"
+"    Export the vault as a compressed archive (.tar.gz).\n"
+"    Defaults to <vault-name>.tar.gz in the current directory.\n\n"
+
+"  --restore-arch <file.tar.gz>\n"
+"    Restore a vault from a backup archive produced by --backup.\n\n"
+
+"  --import <file|dir|.tar.gz>\n"
+"    Import a file, directory, or backup archive into the vault.\n\n"
+
+" Lock & Unlock \n"
+"  --lock\n"
+"    Lock the vault, recording process metadata (PID) to prevent concurrent\n"
+"    access from other instances.\n\n"
+
+"  --lock-status\n"
+"    Display the current lock status of the vault.\n\n"
+
+"  --force-unlock\n"
+"    Forcibly remove the vault lock. Use when a previous process crashed\n"
+"    and left a stale lock. Operator-level operation.\n\n"
+
+" Key Lifecycle \n"
+"  --key-info\n"
+"    Display the vault's cryptographic parameters: algorithm, key length,\n"
+"    PBKDF2 iterations, salt (hex) and derivation purpose labels.\n\n"
+
+"  --key-rotate <old> <new>\n"
+"    Re-encrypt all .enc files using a new password.\n"
+"    Derives a new key via PBKDF2 and re-wraps every file.\n\n"
+
+"  --rekey\n"
+"    Re-encrypt all .enc files with fresh random nonces and salts\n"
+"    using the same password. Eliminates nonce reuse risk.\n\n"
+
+" WORM Protection \n"
+"  --worm-status\n"
+"    Show which WORM (Write Once Read Many) flags are active on the vault.\n\n"
+
+"  --protect-delete\n"
+"    Block all unlink/rmdir calls on vault files ’ returns EPERM.\n"
+"    Files cannot be deleted while this flag is set.\n\n"
+
+"  --protect-rename\n"
+"    Block rename/move operations on vault files ’ returns EPERM.\n\n"
+
+"  --protect-write\n"
+"    Block write operations on existing vault files ’ returns EPERM.\n"
+"    New files can still be created.\n\n"
+
+"  --protect-read\n"
+"    Block read access to vault files ’ returns EPERM.\n"
+"    Used for pure write-only or archival vaults.\n\n"
+
+"  --protected-scan\n"
+"    Enable maximum WORM protection (all protections + integrity scan).\n"
+"    Irreversible without operator intervention. Use --mount-export to\n"
+"    rescue files from a vault in this state.\n\n"
+
+"  --clear-delete / --clear-rename / --clear-write / --clear-read\n"
+"    Remove the corresponding WORM flag from the vault.\n\n"
+
+" Container Whitelist \n"
+"  --white-list -e\n"
+"    Exclude whitelist mode: block operations that are not in the whitelist\n"
+"    (sealed operations are denied by default).\n\n"
+
+"  --white-list -r\n"
+"    Restore whitelist mode: allow sealed operations again.\n\n"
+
+" Image & Container Runtime \n"
+"  --image <url|alpine|ubuntu>\n"
+"    Download and set up an external rootfs image before --run.\n"
+"    Accepts a URL or a named distribution (alpine, ubuntu).\n\n"
+
+" Run Program in Vault Sandbox \n"
+"  --vault <id> --run <exec> [-- exec-args...]\n"
+"    Execute a program inside the vault sandbox using Linux namespaces,\n"
+"    seccomp-BPF, cgroups and optional FUSE. Everything after '--' is\n"
+"    passed as arguments directly to the sandboxed executable.\n\n"
+
 "  Filesystem:\n"
-"    --ro <path>          bind mount path read-only inside sandbox\n"
-"    --rw <path>          bind mount path read-write inside sandbox\n"
-"    --blacklist <path>   make path invisible (tmpfs/null over it)\n"
-"    --ro-home            bind mount $HOME read-only\n"
-"    --rw-home            bind mount $HOME read-write (padrão se nem --ro-home\n"
-"                         nem --tmp-home forem passados)\n"
-"    --tmp-home           ephemeral $HOME in tmpfs (vanishes on exit)\n\n"
-"  Network:\n"
-"    --no-net             unshare network namespace (full isolation)\n\n"
-"  Display:\n"
-"    --wayland            pass Wayland socket + XDG_RUNTIME_DIR (read-only)\n"
-"    --x11                pass X11 socket /tmp/.X11-unix (read-only)\n"
-"    --display <opt>      customiza a variável DISPLAY exportada pro sandbox\n"
-"    --wayland-display <s> customiza WAYLAND_DISPLAY (padrão: wayland-0)\n\n"
-"  Áudio / GPU / D-Bus:\n"
-"    --audio              expõe socket de PulseAudio/PipeWire (read-only)\n"
-"    --gpu                monta /dev/dri (aceleração gráfica)\n"
-"    --xdg-runtime         monta $XDG_RUNTIME_DIR/<uid> além do que --wayland já traz\n"
-"    --dbus <modo>        'session', 'system' ou 'both' — expõe socket(s) D-Bus\n\n"
-"  D-Bus:\n"
-"    --no-dbus            remove DBUS_SESSION_BUS_ADDRESS + cover socket\n\n"
-"  Dispositivos:\n"
-"    --dev <nível>        'minimal' (null/zero/tty/urandom) ou 'standard'\n"
-"                         (+ random/fuse) — nodes de /dev disponíveis no jail\n\n"
-"  Namespaces:\n"
-"    --unshare-ipc        isolate IPC namespace (SysV shm/sem/mq)\n"
-"    --unshare-uts        isolate UTS namespace (hostname)\n"
-"    --hostname <name>    set sandbox hostname (requires --unshare-uts)\n"
-"    --new-session        setsid() — detach from controlling terminal\n"
-"    --no-proc            do not mount /proc inside sandbox\n\n"
-"  Filesystem raiz:\n"
-"    --chroot             usa chroot() em vez de pivot_root() (mais fraco,\n"
-"                         permite escape via path traversal — evite se puder)\n"
-"    --pivot-root          força pivot_root() explicitamente (padrão já usado\n"
-"                         automaticamente quando disponível)\n\n"
-"  Seccomp / Capabilities:\n"
-"    --no-seccomp          desliga o filtro seccomp-BPF (NÃO recomendado —\n"
-"                         remove a última camada de proteção contra syscalls)\n"
-"    --seccomp-strict      allowlist mais restrita (menos syscalls liberadas)\n"
-"    --allow-clone3        libera a syscall clone3 na allowlist (algumas libc\n"
-"                         novas dependem dela; desligada por padrão)\n"
-"    --friendly-sandbox    libera syscalls extras de housekeeping no seccomp\n"
-"                         (fsync/fdatasync/renameat2) — não mexe em\n"
-"                         chroot/capset/mount\n"
-"    --permissive          modo permissivo geral (menos rígido que o padrão)\n\n"
-"  Recursos (rlimits):\n"
-"    --max-procs <n>       RLIMIT_NPROC (1-65535)\n"
-"    --max-mem <gb>        RLIMIT_AS em GB (1-512)\n"
-"    --max-filesize <mb>   RLIMIT_FSIZE em MB (1-102400)\n"
-"    --max-fds <n>         RLIMIT_NOFILE (1-65535)\n"
-"    --tmp-size <mb>       tamanho do tmpfs usado por --tmp-home (1-102400)\n\n"
-"  FUSE:\n"
-"    --no-fuse             não monta o vault via FUSE (usa cópia direta)\n\n"
-"  Audit:\n"
-"    --audit              log exec args, all bind mounts, env changes\n\n"
-"  Profile:\n"
-"    --profile <file>     load isolation flags from .conf file\n"
-"                         (one flag per line, e.g. --no-net)\n"
-"    --preset <nome>      carrega um preset nomeado de flags pré-configurado\n\n"
+"    --ro <path>\n"
+"      Bind mount <path> read-only inside the sandbox.\n"
+"      The sandboxed program can read but not write to this path.\n\n"
 
-"── General ────────────────────────────────────────────────────────\n"
-"  --gui                  launch the graphical interface (nuk4sd_gui.py)\n"
-"  --password <pass>      provide password inline (prompted if omitted)\n"
-"  --verbose              verbose output\n"
-"  --json                 JSON output for --status and --scan\n"
-"  --health <pid>          roda checagem de saúde num sandbox já rodando (PID)\n"
-"  --version              show version\n"
-"  --help                 this help\n\n"
+"    --rw <path>\n"
+"      Bind mount <path> read-write inside the sandbox.\n\n"
+
+"    --blacklist <path>\n"
+"      Make <path> completely invisible inside the sandbox by overlaying\n"
+"      it with a tmpfs or null mount.\n\n"
+
+"    --ro-home\n"
+"      Bind mount $HOME read-only inside the sandbox.\n\n"
+
+"    --rw-home\n"
+"      Bind mount $HOME read-write (default if neither --ro-home\n"
+"      nor --tmp-home are specified).\n\n"
+
+"    --tmp-home\n"
+"      Create an ephemeral $HOME in tmpfs. All changes vanish on exit.\n\n"
+
+"  Network & Firewall:\n"
+"    --no-net\n"
+"      Unshare the network namespace. The sandbox has no network access.\n\n"
+
+"    --net-veth [ip]\n"
+"      Create an isolated network via a veth pair + NAT.\n"
+"      Default IP: 10.0.0.3. The sandbox has internet through the host NAT.\n\n"
+
+"    --nfilter [name]\n"
+"      Install an nftables firewall with default drop egress policy.\n"
+"      Optionally name the ruleset.\n\n"
+
+"    --allow-ip <ip>\n"
+"      Add an IP address to the nftables firewall whitelist.\n"
+"      Only whitelisted IPs can be reached by the sandbox.\n\n"
+
+"  Identification & Supervision:\n"
+"    --uuid\n"
+"      Generate a unique UUID, mask the process name in /proc and\n"
+"      perform automatic integrity audit on exec.\n\n"
+
+"    --init\n"
+"      Run a mini-init (PID 1) inside the sandbox with zombie reaping\n"
+"      and sshd support. Automatically assigns a UUID.\n\n"
+
+"  Display:\n"
+"    --wayland\n"
+"      Pass the Wayland socket and XDG_RUNTIME_DIR (read-only) into\n"
+"      the sandbox. Required for Wayland GUI apps.\n\n"
+
+"    --x11\n"
+"      Pass the X11 socket /tmp/.X11-unix (read-only) into the sandbox.\n"
+"      Required for X11 GUI apps.\n\n"
+
+"    --display <opt>\n"
+"      Customize the DISPLAY environment variable exported to the sandbox.\n\n"
+
+"    --wayland-display <s>\n"
+"      Customize WAYLAND_DISPLAY (default: wayland-0).\n\n"
+
+"  Audio / GPU / D-Bus:\n"
+"    --audio\n"
+"      Expose the PulseAudio/PipeWire socket (read-only) to the sandbox.\n\n"
+
+"    --gpu\n"
+"      Mount /dev/dri to enable GPU hardware acceleration in the sandbox.\n\n"
+
+"    --xdg-runtime\n"
+"      Mount $XDG_RUNTIME_DIR/<uid> beyond what --wayland already includes.\n\n"
+
+"    --dbus <mode>\n"
+"      Expose D-Bus socket(s). Mode: 'session', 'system', or 'both'.\n\n"
+
+"    --no-dbus\n"
+"      Remove DBUS_SESSION_BUS_ADDRESS and cover the socket path.\n"
+"      Prevents any D-Bus communication from within the sandbox.\n\n"
+
+"  Devices:\n"
+"    --dev <level>\n"
+"      Control /dev nodes available in the sandbox.\n"
+"        minimal   null, zero, tty, urandom\n"
+"        standard  minimal + random, fuse\n\n"
+
+"    --mount-dev\n"
+"      Mount an isolated /dev in tmpfs with essential nodes via mknod.\n"
+"      More flexible than --dev when custom node sets are needed.\n\n"
+
+"  Namespaces:\n"
+"    --unshare-ipc\n"
+"      Isolate the IPC namespace (SysV shared memory, semaphores, queues).\n\n"
+
+"    --unshare-uts\n"
+"      Isolate the UTS namespace so the sandbox has its own hostname.\n\n"
+
+"    --hostname <name>\n"
+"      Set the sandbox hostname. Requires --unshare-uts.\n\n"
+
+"    --new-session\n"
+"      Call setsid() to detach the sandbox from the controlling terminal.\n\n"
+
+"    --no-proc\n"
+"      Do not mount /proc inside the sandbox.\n"
+"      Prevents process enumeration from within the jail.\n\n"
+
+"  Root Filesystem:\n"
+"    --chroot\n"
+"      Use chroot() instead of pivot_root() to set the sandbox root.\n"
+"      Weaker isolation  pivot_root() is preferred whenever possible.\n\n"
+
+"    --pivot-root\n"
+"      Explicitly force pivot_root() as the root isolation mechanism.\n"
+"      This is the default when available.\n\n"
+
+"  Seccomp / Capabilities:\n"
+"    --no-seccomp\n"
+"      Disable the seccomp-BPF syscall filter. Not recommended.\n"
+"      Removes the last layer of kernel-level syscall protection.\n\n"
+
+"    --seccomp-strict\n"
+"      Apply a stricter seccomp allowlist with fewer permitted syscalls.\n\n"
+
+"    --allow-clone3\n"
+"      Add clone3 to the seccomp allowlist. Some newer libcs require it.\n"
+"      Disabled by default for security.\n\n"
+
+"    --friendly-sandbox\n"
+"      Allow extra housekeeping syscalls (fsync, fdatasync, renameat2)\n"
+"      without relaxing chroot, capset or mount restrictions.\n\n"
+
+"    --permissive\n"
+"      General permissive mode. Less strict than the default seccomp policy.\n\n"
+
+"    --adapter <rules>\n"
+"      Define a custom adaptive seccomp filter at runtime.\n"
+"      Format: \"accept: <syscall,...> decline: <syscall,...>\"\n"
+"      Both tags also accept 'empty' to skip that direction.\n"
+"      Example: --adapter \"accept: socket, connect decline: ptrace, bpf\"\n\n"
+
+"  Resources (rlimits):\n"
+"    --max-procs <n>\n"
+"      Set RLIMIT_NPROC  maximum number of processes (1-65535).\n\n"
+
+"    --max-mem <gb>\n"
+"      Set RLIMIT_AS  maximum virtual memory in gigabytes (1-512).\n\n"
+
+"    --max-filesize <mb>\n"
+"      Set RLIMIT_FSIZE  maximum single-file size in megabytes (1-102400).\n\n"
+
+"    --max-fds <n>\n"
+"      Set RLIMIT_NOFILE  maximum open file descriptors (1-65535).\n\n"
+
+"    --tmp-size <mb>\n"
+"      Size in MB of the tmpfs used by --tmp-home (1-102400).\n\n"
+
+"  Resource Control (Cgroups v1/v2):\n"
+"    --cgroup [name]\n"
+"      Enable cgroups isolation. Default group: nuk4sd/sandbox-<pid>.\n\n"
+
+"    --cgroup-name <name>\n"
+"      Define a custom name for the cgroup instead of the auto-generated one.\n\n"
+
+"    --cpu-shares <n>\n"
+"      CPU weight/shares (2-262144, default 1024). Higher = more CPU time.\n\n"
+
+"    --cpu-quota <us>\n"
+"      CPU quota in microseconds per period.\n"
+"      Example: 50000 = 50% of one CPU core.\n\n"
+
+"    --cgroup-mem <mb>\n"
+"      Virtual memory limit for the cgroup in megabytes.\n\n"
+
+"  FUSE:\n"
+"    --no-fuse\n"
+"      Do not mount the vault via FUSE. Files are copied directly.\n\n"
+
+"  Audit:\n"
+"    --audit\n"
+"      Log all exec arguments, bind mount operations and environment\n"
+"      variable changes to the audit trail.\n\n"
+
+"  Profile:\n"
+"    --profile <file>\n"
+"      Load isolation flags from a .conf file (one flag per line).\n"
+"      Lines starting with # are treated as comments.\n\n"
+
+"    --preset <name>\n"
+"      Load a named pre-configured isolation profile.\n"
+"      Built-in presets: firefox, browser, flameshot.\n\n"
+
+" Observability & Audit \n"
+"  --stats\n"
+"    Extended telemetry: file sizes, type breakdown and entropy analysis.\n\n"
+
+"  --usage\n"
+"    Show disk space usage broken down by vault region.\n\n"
+
+"  --inspect <file>\n"
+"    Inspect a specific file's metadata, AES-GCM header and tracked state.\n\n"
+
+"  --history\n"
+"    Show the operation log from .vault_history.log.\n\n"
+
+"  --events\n"
+"    Show recent audit events recorded by the vault monitor.\n\n"
+
+" MAC / AppArmor Protection \n"
+"  Mandatory Access Control via Linux AppArmor.\n"
+"  AppArmor confines the nuk4sd process at the kernel level:\n"
+"  only whitelisted operations are permitted per-vault profile.\n\n"
+
+"  --mac-enable\n"
+"    Globally enable AppArmor MAC mode. Sets mac_mode=1 in the catalog.\n"
+"    Future vault mount/unmount operations will automatically load\n"
+"    and remove the corresponding AppArmor profile.\n\n"
+
+"  --app-armor <all|vault-<id>>\n"
+"    Load AppArmor profiles immediately for the specified target.\n"
+"      all         applies to every vault in the catalog.\n"
+"      vault-<id>  applies only to the vault with the given numeric id.\n"
+"    Vaults that already have an active profile are silently skipped.\n\n"
+
+"  --mac-status\n"
+"    Show whether AppArmor MAC is enabled, disabled or pending\n"
+"    first-run configuration.\n\n"
+
+"  --generate-secret\n"
+"    Generate a one-time AppArmor recovery secret.\n"
+"    A random phrase (Nuk4sdRecovery + 12 random digits) is printed once.\n"
+"    Write it on paper  it is NEVER stored in plaintext on disk.\n"
+"    The Argon2id hash is saved at ~/.nuk4sd_mac_secret (mode 600).\n\n"
+
+"  --disable-apparmor [vault-<id>]\n"
+"    Revoke AppArmor protection. Requires the recovery phrase from\n"
+"    --generate-secret. Input is silent (no terminal echo).\n"
+"      No argument   disables all vaults + sets mac_mode=0.\n"
+"      vault-<id>    disables only that specific vault.\n"
+"    A wrong phrase is rejected and the attempt is written to the audit log.\n\n"
+
+" General \n"
+"  --gui\n"
+"    Launch the graphical interface (nuk4sd_gui.py).\n\n"
+
+"  --password <pass>\n"
+"    Provide the vault password inline. If omitted, it is prompted securely.\n\n"
+
+"  --verbose\n"
+"    Enable verbose output for all operations.\n\n"
+
+"  --json\n"
+"    Output --status and --scan results as JSON for scripting.\n\n"
+
+"  --health <pid>\n"
+"    Run a health check on a running sandbox identified by its PID.\n\n"
+
+"  --version\n"
+"    Show Nuk4sd version and build information.\n\n"
+
+"  --help\n"
+"    Show this help message.\n\n"
 
 "  Sandbox tuning (--run):\n"
-"    --no-preflight       skip ldd dependency auto-scan (preflight_scan)\n"
-"                         use when you already know the flags needed, or\n"
-"                         with statically-linked / stripped binaries\n\n"
+"    --no-preflight\n"
+"      Skip the ldd dependency auto-scan (preflight_scan).\n"
+"      Use with statically-linked or stripped binaries, or when\n"
+"      you already know the exact flags needed.\n\n"
 
-"Examples:\n"
-"  Nuk4sd --gui\n"
-"  Nuk4sd --ls\n"
-"  Nuk4sd --vault 3 --encrypt\n"
-"  Nuk4sd --vault 3 --scan --verbose\n"
-"  Nuk4sd --vault 3 --run firefox --no-net --wayland\n"
-"  Nuk4sd --vault 3 --run gimp --wayland --ro /usr/share/fonts\n"
-"  Nuk4sd --vault 3 --run bash --no-net --unshare-ipc --no-proc --audit\n"
-"  Nuk4sd --vault 3 --run code --wayland --rw ~/projects --blacklist ~/.ssh\n"
-"  Nuk4sd --vault 3 --run mpv --x11 --ro /media/films -- /media/films/movie.mkv\n"
-"  Nuk4sd --vault 3 --run busybox --no-preflight --no-net\n"
-"  Nuk4sd --vault 0 --preset nuk4sd-gui --run python3 -- nuk4sd_gui.py\n"
-"  Nuk4sd --new work --path /data/work --protected --engine 2\n"
-"  Nuk4sd --vault 3 --protect-delete --protect-write\n"
-"  Nuk4sd --vault 3 --export --dest ~/rescued --file secret.pdf.enc\n\n"
+" Examples \n"
+"  Launch the GUI:\n"
+"    nuk4sd --gui\n\n"
+
+"  List all vaults:\n"
+"    nuk4sd --ls\n\n"
+
+"  Encrypt all files in vault 3:\n"
+"    nuk4sd --vault 3 --encrypt\n\n"
+
+"  Integrity scan with verbose output:\n"
+"    nuk4sd --vault 3 --scan --verbose\n\n"
+
+"  Run Firefox with full network isolation:\n"
+"    nuk4sd --vault 3 --run firefox --no-net --wayland\n\n"
+
+"  Run GIMP with Wayland and read-only fonts:\n"
+"    nuk4sd --vault 3 --run gimp --wayland --ro /usr/share/fonts\n\n"
+
+"  Run a hardened shell with IPC + proc isolation and audit:\n"
+"    nuk4sd --vault 3 --run bash --no-net --unshare-ipc --no-proc --audit\n\n"
+
+"  Run VS Code with rw projects, blocking .ssh:\n"
+"    nuk4sd --vault 3 --run code --wayland --rw ~/projects --blacklist ~/.ssh\n\n"
+
+"  Run mpv with file passed after '--':\n"
+"    nuk4sd --vault 3 --run mpv --x11 --ro /media/films -- /media/films/movie.mkv\n\n"
+
+"  Run busybox statically linked (skip preflight):\n"
+"    nuk4sd --vault 3 --run busybox --no-preflight --no-net\n\n"
+
+"  Run sshd with veth networking:\n"
+"    nuk4sd --vault 1 --run /usr/sbin/sshd -D --init --net-veth --mount-dev\n\n"
+
+"  Run with custom adaptive seccomp filter:\n"
+"    nuk4sd --vault 1 --run ./app --adapter \"accept: socket, connect decline: ptrace, bpf\"\n\n"
+
+"  Run alpine container:\n"
+"    nuk4sd --image alpine --run /bin/sh --net-veth --mount-dev\n\n"
+
+"  Run nuk4sd GUI via preset:\n"
+"    nuk4sd --vault 0 --preset nuk4sd-gui --run python3 -- nuk4sd_gui.py\n\n"
+
+"  Create a new protected vault:\n"
+"    nuk4sd --new work --path /data/work --protected --engine 2\n\n"
+
+"  Apply WORM protections:\n"
+"    nuk4sd --vault 3 --protect-delete --protect-write\n\n"
+
+"  Export rescued files:\n"
+"    nuk4sd --vault 3 --export --dest ~/rescued --file secret.pdf.enc\n\n"
+
+"  AppArmor setup workflow:\n"
+"    nuk4sd --mac-enable\n"
+"    nuk4sd --generate-secret        # write the phrase on paper\n"
+"    nuk4sd --app-armor all          # load profiles immediately\n"
+"    nuk4sd --disable-apparmor       # enter phrase to revoke\n\n"
     );
 }
 
 /*
  *  Profile loader
- *  Formato: uma flag por linha, linhas com # são comentários
+ *  Format: one flag per line, lines starting with # are comments
  *
- *  Exemplo ~/.config/Nuk4sd/browser.conf:
- *    # perfil para navegadores
+ *  Example ~/.config/Nuk4sd/browser.conf:
+ *    # browser profile
  *    --no-net
  *    --wayland
  *    --ro /usr/share/fonts
@@ -438,11 +1049,11 @@ static void print_help(void) {
  * */
 static void load_profile(CliConfig *cfg, const char *path) {
     FILE *f = fopen(path, "r");
-    if (!f) { fprintf(stderr, "⚠ profile '%s' not found\n", path); return; }
+    if (!f) { fprintf(stderr, "š  profile '%s' not found\n", path); return; }
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-        /* Remove comentário e whitespace */
+        /* Remove comment and whitespace */
         char *hash = strchr(line, '#');
         if (hash) *hash = '\0';
         char *p = line;
@@ -462,6 +1073,42 @@ static void load_profile(CliConfig *cfg, const char *path) {
         else if (!strcmp(p, "--new-session"))   cfg->iso_new_session = true;
         else if (!strcmp(p, "--unshare-ipc"))   cfg->iso_unshare_ipc = true;
         else if (!strcmp(p, "--unshare-uts"))   cfg->iso_unshare_uts = true;
+        else if (!strcmp(p, "--uuid"))          cfg->iso_uuid        = true;
+        else if (!strcmp(p, "--init")) {
+            cfg->iso_init        = true;
+            cfg->iso_uuid        = true;
+        }
+        else if (!strcmp(p, "--mount-dev"))     cfg->iso_mount_dev   = true;
+        else if (!strcmp(p, "--net-veth")) {
+            cfg->iso_net_veth    = true;
+            if (!cfg->iso_net_veth_ip) cfg->iso_net_veth_ip = "10.0.0.3";
+            if (!cfg->iso_net_veth_gw) cfg->iso_net_veth_gw = "10.0.0.2";
+        }
+        else if (!strcmp(p, "--nfilter")) {
+            cfg->iso_nfilter     = true;
+            if (!cfg->iso_nfilter_jail) cfg->iso_nfilter_jail = "nuk4sd_jail";
+        }
+        else if (!strncmp(p, "--adapter ", 10)) cfg->iso_adapter = strdup(p + 10);
+        else if (!strncmp(p, "--cgroup-name ", 14)) {
+            cfg->iso_cgroup = true;
+            cfg->iso_cgroup_name = strdup(p + 14);
+        }
+        else if (!strcmp(p, "--cgroup")) {
+            cfg->iso_cgroup = true;
+            cfg->iso_unshare_cgroup = true;
+        }
+        else if (!strncmp(p, "--cpu-shares ", 13)) {
+            cfg->iso_cgroup = true;
+            cfg->iso_cpu_shares = atoi(p + 13);
+        }
+        else if (!strncmp(p, "--cpu-quota ", 12)) {
+            cfg->iso_cgroup = true;
+            cfg->iso_cpu_quota_us = atoi(p + 12);
+        }
+        else if (!strncmp(p, "--cgroup-mem ", 13)) {
+            cfg->iso_cgroup = true;
+            cfg->iso_cgroup_mem_mb = atoi(p + 13);
+        }
         else if (!strncmp(p, "--ro ", 5) && cfg->bind_count < MAX_BINDS) {
             cli_expand_tilde(p+5, cfg->binds[cfg->bind_count].path, PRESET_PATH_MAX);
             cfg->binds[cfg->bind_count++].type = BIND_RO;
@@ -475,26 +1122,26 @@ static void load_profile(CliConfig *cfg, const char *path) {
             cfg->binds[cfg->bind_count++].type = BIND_BLACKLIST;
         }
         else {
-            fprintf(stderr, "⚠ profile '%s': unknown flag '%s' — skipped\n", path, p);
+            fprintf(stderr, "š  profile '%s': unknown flag '%s'  skipped\n", path, p);
         }
     }
     fclose(f);
 }
 
 /*
- *  Helpers de Parsing
+ *  Parsing Helpers
  * */
 static long parse_int_arg(const char *s, long min, long max, const char *flag_name, int *err) {
     char *endptr;
     errno = 0;
     long val = strtol(s, &endptr, 10);
     if (errno != 0 || endptr == s || *endptr != '\0') {
-        fprintf(stderr, "⚠ invalid integer for %s: '%s'\n", flag_name, s);
+        fprintf(stderr, "š  invalid integer for %s: '%s'\n", flag_name, s);
         if (err) *err = 1;
         return 0;
     }
     if (val < min || val > max) {
-        fprintf(stderr, "⚠ value for %s out of range [%ld..%ld]: %ld\n", flag_name, min, max, val);
+        fprintf(stderr, "š  value for %s out of range [%ld..%ld]: %ld\n", flag_name, min, max, val);
         if (err) *err = 1;
         return 0;
     }
@@ -502,12 +1149,8 @@ static long parse_int_arg(const char *s, long min, long max, const char *flag_na
 }
 
 /*
- *  cli_mkdir_p — cria todos os componentes intermediários do path
- *  path: caminho COMPLETO do diretório a criar (não inclui nome de arquivo)
- *
- *  Necessário para --ro/--rw: mkdir() simples falha com ENOENT se qualquer
- *  diretório pai dentro do vault ainda não existir (ex: dst = vault/usr/share/fonts
- *  mas vault/usr/share ainda não foi criado).
+ *  cli_mkdir_p  creates all intermediate path components
+ *  path: COMPLETE path of directory to create (does not include filename)
  * */
 static int cli_mkdir_p(const char *path, mode_t mode) {
     char tmp[PATH_MAX];
@@ -528,13 +1171,7 @@ static int cli_mkdir_p(const char *path, mode_t mode) {
 }
 
 /*
- *  cli_expand_tilde — expande "~" e "~/resto" pro $HOME real
- *
- *  Sem isso, "--blacklist ~/.ssh" chega no bloco de binds como o path
- *  literal "~/.ssh" (diretório chamado "~" que não existe), o stat() falha,
- *  o bind é silenciosamente pulado, e o blacklist nunca é aplicado de fato.
- *  Escreve o resultado em `out` (tamanho `out_sz`). Se não começar com "~",
- *  ou não houver HOME disponível, copia o path original sem modificar.
+ *  cli_expand_tilde  expands "~" and "~/rest" to real $HOME
  * */
 static void cli_expand_tilde(const char *in, char *out, size_t out_sz) {
     if (in[0] != '~' || (in[1] != '/' && in[1] != '\0')) {
@@ -548,9 +1185,7 @@ static void cli_expand_tilde(const char *in, char *out, size_t out_sz) {
         home = (pw && pw->pw_dir) ? pw->pw_dir : NULL;
     }
     if (!home) {
-        /* sem HOME resolvível: mantém o path literal (vai falhar no stat
-         * como antes, mas não silenciosamente — logamos o motivo). */
-        fprintf(stderr, "⚠ cli_expand_tilde: HOME não definido, mantendo '%s' literal\n", in);
+        fprintf(stderr, "š  cli_expand_tilde: HOME not set, keeping '%s' literal\n", in);
         snprintf(out, out_sz, "%s", in);
         return;
     }
@@ -562,10 +1197,7 @@ static void cli_expand_tilde(const char *in, char *out, size_t out_sz) {
 }
 
 /*
- *  bind_path_is_safe — impede path traversal para fora do vault_path
- *  Verifica se dst, após resolução, ainda tem vault_path como prefixo.
- *  Como dst pode ainda não existir, sobe no path até achar um componente
- *  já existente para poder chamar realpath().
+ *  bind_path_is_safe  prevents path traversal outside vault_path
  * */
 static bool bind_path_is_safe(const char *vault_path, const char *dst) {
     char resolved_vault[PATH_MAX];
@@ -577,7 +1209,7 @@ static bool bind_path_is_safe(const char *vault_path, const char *dst) {
 
     while (!realpath(probe, resolved_probe)) {
         char *slash = strrchr(probe, '/');
-        if (!slash || slash == probe) return false; /* chegou na raiz sem achar nada existente */
+        if (!slash || slash == probe) return false;
         *slash = '\0';
     }
 
@@ -587,26 +1219,15 @@ static bool bind_path_is_safe(const char *vault_path, const char *dst) {
 }
 
 /*
- *  Parser principal
+ *  Main Parser
  * */
- // Adiciona temporariamente em vault_cli.c, no início do main ou do parse_flags:
 
 static int parse_flags(int argc, char **argv, CliConfig *cfg) {
-    // Adiciona temporariamente em vault_cli.c, no início do main ou do parse_flags:
     memset(cfg, 0, sizeof(*cfg));
     cfg->vault_id       = -1;
     cfg->rule_hour_from = -1;
     cfg->rule_hour_to   = -1;
 
-    /* CRÍTICO: optind é estático/global na libc e persiste entre chamadas
-     * de getopt_long() dentro do mesmo processo. Como vault_cli_parse_and_exec()
-     * pode ser invocado múltiplas vezes no mesmo processo (REPL — um comando
-     * por linha), é obrigatório resetar o estado do getopt aqui, senão o
-     * segundo comando em diante começa o parse além do fim do novo argv e
-     * nenhuma flag é reconhecida (cai sempre no print_help() do dispatcher).
-     * optind = 0 é a extensão GNU que força reinicialização completa,
-     * inclusive do ponteiro interno nextchar — optind = 1 sozinho não é
-     * suficiente em todos os casos. */
     optind = 0;
 
     int opt, opt_index = 0;
@@ -677,8 +1298,50 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
             break;
         /* run */
         case OPT_RUN: cfg->run_exec = optarg; break;
-        /* isolamento */
+        /* isolation */
         case OPT_NO_NET:       cfg->iso_no_net      = true;   break;
+        case OPT_UUID:         cfg->iso_uuid        = true;   break;
+        case OPT_INIT:
+            cfg->iso_init        = true;
+            cfg->iso_uuid        = true;
+            break;
+        case OPT_NET_VETH: {
+            cfg->iso_net_veth = true;
+            const char *ip = (optarg && *optarg) ? optarg : "10.0.0.3";
+            struct in_addr a;
+            if (inet_pton(AF_INET, ip, &a) != 1) {
+                print_err("--net-veth: Invalid IPv4"); return -1;
+            }
+            cfg->iso_net_veth_ip = (char *)ip;
+            cfg->iso_net_veth_gw = "10.0.0.2";
+            break;
+        }
+        case OPT_NFILTER:
+            cfg->iso_nfilter = true;
+            if (optarg && *optarg) {
+                for (const char *p = optarg; *p; p++) {
+                    if (!isalnum((unsigned char)*p) && *p != '_') {
+                        print_err("--nfilter: invalid name (alphanumeric and _ only)"); return -1;
+                    }
+                }
+                cfg->iso_nfilter_jail = optarg;
+            } else {
+                cfg->iso_nfilter_jail = "nuk4sd_jail";
+            }
+            break;
+        case OPT_ALLOW_IP: {
+            struct in_addr a;
+            if (inet_pton(AF_INET, optarg, &a) != 1) {
+                print_err("--allow-ip: Invalid IPv4"); return -1;
+            }
+            cfg->iso_nfilter = true;
+            if (!cfg->iso_nfilter_jail)
+                cfg->iso_nfilter_jail = "nuk4sd_jail";
+            if (user_send_set_ip(cfg->iso_nfilter_jail, optarg) != 0) {
+                print_warn("Failed to add IP to whitelist");
+            }
+            break;
+        }
         case OPT_WAYLAND:      cfg->iso_wayland     = true;   break;
         case OPT_X11:          cfg->iso_x11         = true;   break;
         case OPT_RO_HOME:      cfg->iso_ro_home     = true;   break;
@@ -717,10 +1380,6 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
         case OPT_MOUNT_DEV:
             cfg->iso_mount_dev = true;
             break;
-        /* limites de recurso — parse_int_arg() valida range e
-         * detecta overflow; atoi() retornava 0 silenciosamente
-         * em caso de argumento inválido ou negativo, o que poderia
-         * resultar em um rlim_t com wrap-around ao multiplicar.  */
         case OPT_MAX_PROCS: {
             int _e = 0;
             cfg->iso_max_procs    = (int)parse_int_arg(optarg, 1, 65535, "--max-procs", &_e);
@@ -751,7 +1410,7 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
             if (_e) return -1;
             break;
         }
-        /* gerais */
+        /* general */
         case OPT_PASSWORD: cfg->password    = optarg; break;
         case OPT_VERBOSE:  cfg->verbose     = true;   break;
         case OPT_JSON:     cfg->json_output = true;   break;
@@ -760,7 +1419,38 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
         case 'q':          cfg->seccomp_strict = true; break;
         case 'k':          cfg->allow_clone3   = true; break;
         case OPT_FRIENDLY_SANDBOX: cfg->friendly_sandbox = true; break;
-        case OPT_PERMISSIVE_SANDBOX: cfg->permissive_sandbox = true; break;
+        case OPT_ADAPTER:  cfg->iso_adapter    = optarg; break;
+        /* cgroups v1/v2 */
+        case OPT_CGROUP:
+            cfg->iso_cgroup = true;
+            cfg->iso_unshare_cgroup = true;
+            if (optarg && optarg[0]) cfg->iso_cgroup_name = optarg;
+            break;
+        case OPT_CGROUP_NAME:
+            cfg->iso_cgroup = true;
+            cfg->iso_cgroup_name = optarg;
+            break;
+        case OPT_CPU_SHARES: {
+            int _e = 0;
+            cfg->iso_cpu_shares = (int)parse_int_arg(optarg, 2, 262144, "--cpu-shares", &_e);
+            if (_e) return -1;
+            cfg->iso_cgroup = true;
+            break;
+        }
+        case OPT_CPU_QUOTA: {
+            int _e = 0;
+            cfg->iso_cpu_quota_us = (int)parse_int_arg(optarg, 1000, 10000000, "--cpu-quota", &_e);
+            if (_e) return -1;
+            cfg->iso_cgroup = true;
+            break;
+        }
+        case OPT_CGROUP_MEM: {
+            int _e = 0;
+            cfg->iso_cgroup_mem_mb = (int)parse_int_arg(optarg, 16, 1048576, "--cgroup-mem", &_e);
+            if (_e) return -1;
+            cfg->iso_cgroup = true;
+            break;
+        }
         case OPT_NO_PREFLIGHT: cfg->skip_preflight = true; break;
         case OPT_NO_FUSE:      cfg->no_fuse        = true; break;
         case OPT_HEALTH: {
@@ -793,6 +1483,195 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
                 cfg->binds[cfg->bind_count++].type = BIND_BLACKLIST;
             }
             break;
+        /* Extended file operations */
+        case OPT_ADD:
+            cfg->op_add = true;
+            cfg->add_file = optarg;
+            break;
+        case OPT_RECURSIVE:
+            cfg->add_recursive = true;
+            break;
+        case OPT_REPLACE:
+            cfg->add_replace = true;
+            break;
+        case OPT_PRESERVE:
+            cfg->add_preserve = true;
+            break;
+        case OPT_EXTRACT:
+            cfg->op_extract = true;
+            cfg->extract_file = optarg;
+            break;
+        case OPT_FORCE:
+            cfg->extract_force = true;
+            break;
+        case OPT_MV:
+            cfg->op_mv = true;
+            cfg->mv_src = optarg;
+            if (optind < argc && argv[optind][0] != '-') {
+                cfg->mv_dest = argv[optind++];
+            }
+            break;
+        case OPT_CP:
+            cfg->op_cp = true;
+            cfg->cp_src = optarg;
+            if (optind < argc && argv[optind][0] != '-') {
+                cfg->cp_dest = argv[optind++];
+            }
+            break;
+        case OPT_RM_FILE:
+            cfg->op_rm_file = true;
+            cfg->rm_file_target = optarg;
+            break;
+        case OPT_MKDIR:
+            cfg->op_mkdir = true;
+            cfg->mkdir_target = optarg;
+            break;
+        case OPT_RMDIR:
+            cfg->op_rmdir = true;
+            cfg->rmdir_target = optarg;
+            break;
+        case OPT_TREE:
+            cfg->op_tree = true;
+            break;
+        case OPT_DU:
+            cfg->op_du = true;
+            break;
+        case OPT_FIND:
+            cfg->op_find = true;
+            cfg->find_pattern = optarg;
+            break;
+        /* Snapshots & Immutable Versioning */
+        case OPT_SNAPSHOT:
+            cfg->op_snapshot = true;
+            if (optarg && optarg[0]) {
+                cfg->snapshot_tag = optarg;
+            } else if (optind < argc && argv[optind][0] != '-') {
+                cfg->snapshot_tag = argv[optind++];
+            }
+            break;
+        case OPT_SNAPSHOTS:
+            cfg->op_snapshots = true;
+            break;
+        case OPT_SNAPSHOT_DELETE:
+            cfg->op_snapshot_delete = true;
+            cfg->snapshot_del_tag = optarg;
+            break;
+        case OPT_SNAPSHOT_RESTORE:
+            cfg->op_snapshot_restore = true;
+            cfg->snapshot_restore_tag = optarg;
+            break;
+        case OPT_SNAPSHOT_DIFF:
+            cfg->op_snapshot_diff = true;
+            cfg->snapshot_diff_tag1 = optarg;
+            if (optind < argc && argv[optind][0] != '-') {
+                cfg->snapshot_diff_tag2 = argv[optind++];
+            }
+            break;
+        /*  Cryptographic Integrity  */
+        case OPT_HASH:
+            cfg->op_hash = true;
+            if (optarg && optarg[0]) {
+                cfg->hash_target = optarg;
+            } else if (optind < argc && argv[optind][0] != '-') {
+                cfg->hash_target = argv[optind++];
+            }
+            break;
+        case OPT_BASELINE:
+            cfg->op_baseline = true;
+            break;
+        case OPT_VERIFY:
+            cfg->op_verify = true;
+            break;
+        case OPT_INTEGRITY:
+            cfg->op_integrity = true;
+            break;
+        case OPT_REPAIR:
+            cfg->op_repair = true;
+            break;
+        case OPT_DIFF:
+            cfg->op_diff = true;
+            if (optarg && optarg[0]) {
+                cfg->diff_other = optarg;
+            } else if (optind < argc && argv[optind][0] != '-') {
+                cfg->diff_other = argv[optind++];
+            }
+            break;
+        /*  Backup & Import  */
+        case OPT_BACKUP:
+            cfg->op_backup = true;
+            if (optarg && optarg[0]) {
+                cfg->backup_out = optarg;
+            } else if (optind < argc && argv[optind][0] != '-') {
+                cfg->backup_out = argv[optind++];
+            }
+            break;
+        case OPT_RESTORE_ARCH:
+            cfg->op_restore = true;
+            cfg->restore_archive = optarg;
+            break;
+        case OPT_IMPORT:
+            cfg->op_import = true;
+            cfg->import_src = optarg;
+            break;
+        /*  Lock/Unlock  */
+        case OPT_LOCK:
+            cfg->op_lock = true;
+            break;
+        case OPT_LOCK_STATUS:
+            cfg->op_lock_status = true;
+            break;
+        case OPT_FORCE_UNLOCK:
+            cfg->op_force_unlock = true;
+            break;
+        /*  Key Lifecycle  */
+        case OPT_KEY_INFO:
+            cfg->op_key_info = true;
+            break;
+        case OPT_KEY_ROTATE:
+            cfg->op_key_rotate = true;
+            cfg->key_rotate_old = optarg;
+            if (optind < argc && argv[optind][0] != '-') {
+                cfg->key_rotate_new = argv[optind++];
+            }
+            break;
+        case OPT_REKEY:
+            cfg->op_rekey = true;
+            break;
+        /*  Observability  */
+        case OPT_STATS:
+            cfg->op_stats = true;
+            break;
+        case OPT_USAGE:
+            cfg->op_usage = true;
+            break;
+        case OPT_INSPECT:
+            cfg->op_inspect = true;
+            cfg->inspect_target = optarg;
+            break;
+        case OPT_HISTORY:
+            cfg->op_history = true;
+            break;
+        case OPT_EVENTS:
+            cfg->op_events = true;
+            break;
+        case OPT_APP_ARMOR:
+            cfg->op_app_armor = true;
+            cfg->app_armor_target = optarg; /* "all" or "vault-<id>" */
+            break;
+        case OPT_MAC_ENABLE:
+            cfg->op_mac_enable = true;
+            break;
+        case OPT_DISABLE_APPARMOR:
+            cfg->op_disable_apparmor = true;
+            if (optarg)
+                cfg->app_armor_target = optarg; /* vault-<id> or NULL = all */
+            break;
+        case OPT_MAC_STATUS:
+            cfg->op_mac_status = true;
+            break;
+        case OPT_GENERATE_SECRET:
+            cfg->op_generate_secret = true;
+            break;
         case '?':
         default:
             fprintf(stderr, "  Use --help for usage.\n");
@@ -800,18 +1679,14 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
         }
     }
 
-    /* Argumentos após -- são passados diretamente ao exec */
     if (cfg->run_exec && optind < argc) {
         cfg->run_argv = &argv[optind];
         cfg->run_argc = argc - optind;
     }
 
-    /* Carrega profile de arquivo se especificado */
     if (cfg->iso_profile)
         load_profile(cfg, cfg->iso_profile);
 
-    /* Aplica preset built-in (antes do profile de arquivo para que flags
-     * explícitas na linha de comando sobrescrevam o preset) */
     if (cfg->iso_preset) {
         const char *p = cfg->iso_preset;
         if (!strcmp(p, "firefox") || !strcmp(p, "browser") || !strcmp(p, "flameshot")) {
@@ -846,78 +1721,43 @@ static int parse_flags(int argc, char **argv, CliConfig *cfg) {
             cfg->iso_x11          = true;
             cfg->iso_audio        = true;
             cfg->iso_gpu          = true;
-            cfg->iso_dbus_session = true;  /* mpv/celluloid/hypnotix usam D-Bus para IPC e MPRIS */
+            cfg->iso_dbus_session = true;
             cfg->iso_xdg_runtime  = true;
             cfg->iso_rw_home      = true;
             if (!cfg->iso_dev_level) cfg->iso_dev_level = 2;
         } else if (!strcmp(p, "nuk4sd-gui")) {
-            /* Preset especial para rodar a PRÓPRIA GUI em sandbox */
             cfg->iso_wayland      = true;
             cfg->iso_x11          = true;
             cfg->iso_dbus_session = true;
             cfg->iso_xdg_runtime  = true;
             cfg->iso_gpu          = true;
-            cfg->iso_rw_home      = true;     /* Para ~/.config/nuk4sd e ~/.local/share/Nuk4sd */
-            cfg->permissive_sandbox = true;   /* Para o app poder criar child sandboxes */
+            cfg->iso_rw_home      = true;
+            cfg->permissive_sandbox = true;
             if (!cfg->iso_dev_level) cfg->iso_dev_level = 2;
         } else if (!strcmp(p, "minimal")) {
-            /* sandbox básico sem display */
+            /* basic sandbox without display */
         } else {
-            fprintf(stderr, "⚠ preset '%s' desconhecido. Disponíveis: firefox, browser, office, evince, dev, code, gedit, media, celluloid, hypnotix, flameshot, nautilus, nuk4sd-gui, minimal\n", p);
+            fprintf(stderr, "š  unknown preset '%s'. Available: firefox, browser, office, evince, dev, code, gedit, media, celluloid, hypnotix, flameshot, nautilus, nuk4sd-gui, minimal\n", p);
         }
+    }
+
+    if (cfg->iso_no_net && cfg->iso_net_veth) {
+        print_err("[SECURITY] Conflict: --no-net and --net-veth are mutually exclusive.");
+        return -1;
+    }
+    if (cfg->iso_nfilter && !cfg->iso_net_veth) {
+        print_err("[SECURITY] --nfilter requires isolated network enabled (--net-veth).");
+        return -1;
     }
 
     return 0;
 }
 
 /*
- *  run_isolated() — executa programa dentro do sandbox do vault
- *
- *  Usa os wrappers públicos vsb_* de vault_sandbox.c que expõem as funções
- *  internas do sandbox de 5 camadas já implementado:
- *    vsb_prepare_jail()      → prepara estrutura de diretórios do jail
- *    vsb_write_uid_gid_map() → escreve uid_map/gid_map no filho
- *    vsb_pivot_root()        → pivot_root para o vault
- *    vsb_prepare_mounts()    → monta /proc e /tmp dentro do jail
- *    vsb_drop_caps()         → remove todas as capabilities Linux
- *    vsb_apply_seccomp()     → carrega BPF allowlist completa
- *
- *  Isolamento adicional gerenciado aqui:
- *    --ro/--rw/--blacklist → bind mounts antes do pivot
- *    --ro-home             → bind read-only do $HOME
- *    --tmp-home            → tmpfs vazio como $HOME
- *    --wayland             → bind /run/user/<uid> read-only + env vars
- *    --x11                 → bind /tmp/.X11-unix read-only
- *    --no-dbus             → remove env + cobre socket
- *    --no-net              → CLONE_NEWNET
- *    --unshare-ipc         → CLONE_NEWIPC
- *    --unshare-uts         → CLONE_NEWUTS + sethostname
- *    --new-session         → setsid()
- *    --no-proc             → não monta /proc
+ *  run_isolated()  runs program inside vault sandbox
  * */
 #ifdef __linux__
 
-/* resolve_real_uid(): resolve o UID "de verdade" da sessão gráfica do
- * usuário, mesmo quando o Nuk4sd inteiro roda como root via `sudo`.
- *
- * Problema que isso resolve: getuid() sozinho, sob `sudo`, retorna 0
- * (root) desde o início do processo — então qualquer path construído
- * como "/run/user/%d" vira "/run/user/0", que geralmente nem existe.
- * O compositor Wayland, o PipeWire/Pulse e o D-Bus session bus do
- * usuário real vivem em "/run/user/<uid original>" (ex: 1000), nunca
- * em "/run/user/0". `sudo` exporta esse UID original em $SUDO_UID —
- * usamos isso como fonte preferencial, com getuid() como fallback pro
- * caso raro de rodar sem sudo (ex: já como root de verdade, ou dentro
- * de outro mecanismo de elevação que não seta $SUDO_UID).
- *
- * Esta função é a ÚNICA fonte de verdade pra isso no arquivo — antes,
- * só o bloco --wayland fazia essa resolução; --xdg-runtime, --audio e
- * --dbus session usavam getuid() puro via a macro ENSURE_XDG_DIR, e
- * como esses blocos rodam DEPOIS do --wayland (e no preset "firefox"
- * todos ficam ligados ao mesmo tempo), a variável de ambiente correta
- * setada pelo --wayland era sobrescrita pela errada logo em seguida —
- * causando falha de conexão ao Wayland/D-Bus mesmo com o socket certo
- * disponível no host. */
 static uid_t resolve_real_uid(void) {
     uid_t real_uid = getuid();
     const char *sudo_uid_s = getenv("SUDO_UID");
@@ -925,7 +1765,6 @@ static uid_t resolve_real_uid(void) {
         errno = 0;
         char *end = NULL;
         long parsed = strtol(sudo_uid_s, &end, 10);
-        /* FIX #7: bound check explícito — UID válido é 0..65535 */
         if (errno == 0 && end != sudo_uid_s && *end == '\0' &&
             parsed >= 0 && parsed <= 65535)
             real_uid = (uid_t)parsed;
@@ -940,7 +1779,6 @@ static gid_t resolve_real_gid(void) {
         errno = 0;
         char *end = NULL;
         long parsed = strtol(sudo_gid_s, &end, 10);
-        /* FIX #7: bound check explícito — GID válido é 0..65535 */
         if (errno == 0 && end != sudo_gid_s && *end == '\0' &&
             parsed >= 0 && parsed <= 65535)
             real_gid = (gid_t)parsed;
@@ -949,60 +1787,36 @@ static gid_t resolve_real_gid(void) {
 }
 
 static int run_isolated(CliConfig *cfg, char *vault_path) {
-    /* Auto-scanner: descobre dependências via ldd e altera as
-     * flags no cfg ANTES de aplicarmos o isolamento.
-     * Pode ser desativado com --no-preflight quando o usuário
-     * já sabe quais flags usar, ou em binários estáticos/stripped
-     * onde o ldd pode se comportar de forma inesperada. */
     if (cfg->run_exec && !cfg->skip_preflight) {
         preflight_scan(cfg, cfg->run_exec);
     } else if (cfg->run_exec && cfg->skip_preflight) {
-        fprintf(stderr, "[RUN] preflight_scan desativado via --no-preflight\n");
+        fprintf(stderr, "[RUN] preflight_scan disabled via --no-preflight\n");
     }
 
     uid_t real_uid = resolve_real_uid();
     gid_t real_gid = resolve_real_gid();
     bool gui_mode = cfg->iso_wayland || cfg->iso_x11;
 
-    /* ── Cria jail_root em /tmp (filesystem real, não FUSE) ─────────────────
-     *
-     * Problema: o vault é exposto via FUSE. O kernel Linux rejeita
-     * chroot(), pivot_root() e mount() num mountpoint FUSE com EACCES,
-     * independente de capabilities ou user namespace — o FUSE driver não
-     * implementa as operações necessárias para servir de nova raiz.
-     *
-     * Solução: cria um diretório temporário em /tmp (tmpfs real do kernel).
-     * O diretório em si é só criado aqui no pai (mkdir não exige privilégio
-     * nenhum) — mas o BIND-MOUNT do vault nele e o vsb_prepare_jail() agora
-     * rodam DENTRO do filho, depois do unshare(CLONE_NEWUSER|CLONE_NEWNS)
-     * (ver mais abaixo). mount() exige CAP_SYS_ADMIN, e sem sudo o processo
-     * pai não tem isso — só ganha essa capability (namespaced) depois de
-     * criar seu próprio user namespace. Fazer o bind aqui no pai, como
-     * antes, funcionava só porque sempre rodava como root real (sudo).
-     *
-     * O diretório /tmp/Nuk4sd-jail-XXXXXX é removido automaticamente
-     * após o processo filho encerrar (cleanup no pai) — o bind-mount em si
-     * já desaparece sozinho quando o mount namespace privado do filho é
-     * destruído na saída dele, então só falta remover o diretório vazio. */
     char jail_root[PATH_MAX];
     snprintf(jail_root, sizeof(jail_root), "/tmp/Nuk4sd-jail-XXXXXX");
     if (mkdtemp(jail_root) == NULL) {
-        perror("[RUN] mkdtemp jail_root em /tmp");
+        perror("[RUN] mkdtemp jail_root in /tmp");
         return -1;
     }
-    /* A partir daqui, usar jail_root em vez de vault_path para todas as
-     * operações de montagem e isolamento de filesystem (o bind de verdade
-     * só acontece dentro do filho, mais abaixo). */
     const char *vault_path_orig = vault_path;
     vault_path = jail_root;
 
-    /* Pipes de sincronização pai ↔ filho (mesmo padrão do vault_sandbox_open) */
     int sync_pipe[2], ready_pipe[2];
     if (pipe(sync_pipe) != 0 || pipe(ready_pipe) != 0) {
         perror("[RUN] pipe"); return -1;
     }
+    int net_ready_pipe[2] = { -1, -1 }, net_sync_pipe[2] = { -1, -1 };
+    if (cfg->iso_net_veth) {
+        if (pipe(net_ready_pipe) != 0 || pipe(net_sync_pipe) != 0) {
+            perror("[RUN] net pipe"); return -1;
+        }
+    }
 
-    /* Audit: loga configuração antes de forkar */
     if (cfg->iso_audit) {
         fprintf(stderr, "[audit] exec:         %s\n", cfg->run_exec);
         fprintf(stderr, "[audit] vault_path:   %s\n", vault_path);
@@ -1020,7 +1834,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         }
     }
 
-    /* ── Log massivo da configuração do sandbox ─────────────────────────── */
     {
         const char *bpaths[MAX_BINDS];
         int         btypes[MAX_BINDS];
@@ -1042,7 +1855,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
     if (pid < 0) { perror("[RUN] fork"); return -1; }
 
     /*
-     *  PROCESSO PAI — escreve uid/gid map e aguarda o filho
+     *  PARENT PROCESS
      * */
     if (pid > 0) {
         vault_auth_pid_add_ffi(pid);
@@ -1050,20 +1863,13 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         close(ready_pipe[1]);
         close(sync_pipe[0]);
 
-        /* Aguarda filho sinalizar que fez unshare(CLONE_NEWUSER) */
         char c;
         if (read(ready_pipe[0], &c, 1) != 1)
             perror("[RUN] ready_pipe read");
         close(ready_pipe[0]);
 
-        /* Escreve uid_map/gid_map usando o helper do vault_sandbox.c.
-         * Se falhar (nem newuidmap/newgidmap nem write direto funcionaram),
-         * o filho ficaria preso como UID/GID de overflow (65534) — mata ele
-         * em vez de liberar pra rodar num estado quebrado (ver cadeia de
-         * falhas em cascata que isso causa: FUSE EACCES em tudo, /dev/null
-         * nunca criado, crash do app). */
         if (vsb_write_uid_gid_map(pid, real_uid, real_gid) != 0) {
-            fprintf(stderr, "[RUN][FATAL] uid_map/gid_map falhou — abortando sandbox.\n");
+            fprintf(stderr, "[RUN][FATAL] uid_map/gid_map failed  aborting sandbox.\n");
             kill(pid, SIGKILL);
             close(sync_pipe[1]);
             int status;
@@ -1074,15 +1880,73 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             return -1;
         }
 
-        /* Libera filho para continuar */
+        char cg_name[128] = {0};
+        bool cg_applied = false;
+        if (cfg->iso_cgroup || cfg->iso_cpu_shares > 0 || cfg->iso_cpu_quota_us > 0 || cfg->iso_cgroup_mem_mb > 0) {
+            if (cfg->iso_cgroup_name && cfg->iso_cgroup_name[0]) {
+                snprintf(cg_name, sizeof(cg_name), "nuk4sd/%s", cfg->iso_cgroup_name);
+            } else {
+                snprintf(cg_name, sizeof(cg_name), "nuk4sd/sandbox-%d", (int)pid);
+            }
+            long long mem_mb = cfg->iso_cgroup_mem_mb > 0
+                ? (long long)cfg->iso_cgroup_mem_mb
+                : (cfg->iso_max_mem_gb > 0 ? (long long)cfg->iso_max_mem_gb * 1024 : 0);
+            unsigned long long shares = cfg->iso_cpu_shares > 0 ? (unsigned long long)cfg->iso_cpu_shares : 1024;
+            long long quota = cfg->iso_cpu_quota_us > 0 ? (long long)cfg->iso_cpu_quota_us : 0;
+            long long procs = cfg->iso_max_procs > 0 ? (long long)cfg->iso_max_procs : 0;
+
+            int rc = rust_cgroup_apply(cg_name, (unsigned long long)pid, mem_mb, shares, quota, procs);
+            if (rc == 0) {
+                cg_applied = true;
+                if (cfg->verbose) {
+                    printf("[CGROUP] Cgroup '%s' applied successfully to PID %d.\n", cg_name, (int)pid);
+                }
+            } else {
+                if (cfg->iso_cgroup) {
+                    fprintf(stderr, "[RUN][FATAL] Failed to apply cgroup '%s' to PID %d (no cgroup delegation on host).\n", cg_name, (int)pid);
+                    kill(pid, SIGKILL);
+                    close(sync_pipe[1]);
+                    int status;
+                    waitpid(pid, &status, 0);
+                    vault_auth_pid_remove_ffi(pid);
+                    umount2(jail_root, MNT_DETACH);
+                    rmdir(jail_root);
+                    return -1;
+                } else {
+                    fprintf(stderr, "[CGROUP][WARN] Cgroup unavailable on host  maintaining default rlimit bounds.\n");
+                }
+            }
+        }
+
         close(sync_pipe[1]);
+
+        if (cfg->iso_net_veth) {
+            close(net_ready_pipe[1]);
+            close(net_sync_pipe[0]);
+            char nr;
+            if (read(net_ready_pipe[0], &nr, 1) == 1) {
+                const char *j_ip = cfg->iso_net_veth_ip ? cfg->iso_net_veth_ip : "10.0.0.3";
+                const char *g_ip = cfg->iso_net_veth_gw ? cfg->iso_net_veth_gw : "10.0.0.2";
+                vsb_net_veth_setup(pid, j_ip, g_ip, "nuk4sd-veth");
+            }
+            close(net_ready_pipe[0]);
+            char ns = 'k';
+            write(net_sync_pipe[1], &ns, 1);
+            close(net_sync_pipe[1]);
+        }
 
         int status;
         waitpid(pid, &status, 0);
         vault_auth_pid_remove_ffi(pid);
 
-        /* Limpa jail_root temporário (/tmp/Nuk4sd-jail-XXXXXX):
-         * desmonta o bind do vault FUSE e remove o diretório vazio. */
+        if (cg_applied && cg_name[0]) {
+            rust_cgroup_cleanup(cg_name);
+        }
+
+        if (cfg->iso_net_veth) {
+            vsb_cleanup_veth("nuk4sd-veth");
+        }
+
         if (umount2(jail_root, MNT_DETACH) != 0)
             fprintf(stderr, "[RUN] umount jail_root '%s': %s (non-fatal)\n",
                     jail_root, strerror(errno));
@@ -1100,29 +1964,30 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
     }
 
     /*
-     *  PROCESSO FILHO — sandbox de 5 camadas + isolamentos extras
+     *  CHILD PROCESS  5-layer sandbox + extra isolations
      * */
     close(sync_pipe[1]);
     close(ready_pipe[0]);
     prctl(PR_SET_NAME, "Nuk4sd-Run", 0, 0, 0);
 
-    /* ── [Camada 1] User Namespace ──────────────────────────────────────── */
+    /*  [Layer 1] User Namespace  */
     if (unshare(CLONE_NEWUSER) != 0) {
         fprintf(stderr, "[RUN] unshare CLONE_NEWUSER: %s\n", strerror(errno));
         cli_log_namespace_event("CLONE_NEWUSER", CLONE_NEWUSER, getpid(), errno);
         _exit(1);
     }
     cli_log_namespace_event("CLONE_NEWUSER", CLONE_NEWUSER, getpid(), 0);
-    /* Avisa pai: user namespace pronta para receber uid/gid map */
     { char r = 'r'; write(ready_pipe[1], &r, 1); close(ready_pipe[1]); }
-    /* Aguarda pai escrever uid_map/gid_map */
     { char r; read(sync_pipe[0], &r, 1); close(sync_pipe[0]); }
 
-    /* ── [Camada 2] Namespaces adicionais ───────────────────────────────── */
+    /*  [Layer 2] Additional Namespaces  */
     int ns_flags = CLONE_NEWNS | CLONE_NEWPID;
-    if (cfg->iso_no_net)      ns_flags |= CLONE_NEWNET;
-    if (cfg->iso_unshare_ipc) ns_flags |= CLONE_NEWIPC;
-    if (cfg->iso_unshare_uts) ns_flags |= CLONE_NEWUTS;
+    if (cfg->iso_no_net || cfg->iso_net_veth) ns_flags |= CLONE_NEWNET;
+    if (cfg->iso_unshare_ipc)                 ns_flags |= CLONE_NEWIPC;
+    if (cfg->iso_unshare_uts)                 ns_flags |= CLONE_NEWUTS;
+#ifdef CLONE_NEWCGROUP
+    if (cfg->iso_cgroup || cfg->iso_unshare_cgroup) ns_flags |= CLONE_NEWCGROUP;
+#endif
 
     if (unshare(ns_flags) != 0) {
         fprintf(stderr, "[RUN] unshare namespaces (0x%x): %s\n",
@@ -1132,54 +1997,56 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
     }
     cli_log_namespace_event("CLONE_NEWNS|CLONE_NEWPID|extras", ns_flags, getpid(), 0);
 
-    /* ── bind-monta o vault FUSE → SUBPASTA dedicada dentro de jail_root ──
-     * Precisa acontecer AQUI (depois do unshare(CLONE_NEWNS) acima), não
-     * antes do fork() no pai: mount() exige CAP_SYS_ADMIN, e sem sudo só
-     * temos essa capability (namespaced) depois de criar nosso próprio
-     * user+mount namespace. Ver comentário no processo pai sobre jail_root.
-     *
-     * [FIX ESTRUTURAL] Antes, isso montava o vault DIRETO em cima de
-     * jail_root (mount(vault, jail_root, ...)) — o que SUBSTITUI o
-     * conteúdo de jail_root pelo do vault, em vez de empilhar um dentro do
-     * outro. Resultado: jail_root parava de ser tmpfs real e virava, na
-     * prática, o próprio FUSE do vault — e QUALQUER coisa criada depois
-     * (--dev, --ro-home, os autodirs de GUI) esbarrava nas regras do FUSE
-     * (que não permite mkdir/create arbitrário), explicando TODOS os
-     * "[FUSE] create/mkdir failed: -13" que apareciam em cascata.
-     *
-     * Agora: jail_root continua tmpfs real na raiz. O vault fica numa
-     * subpasta dedicada (jail_root/vault) — scaffolding do jail (dev,
-     * etc, home real via --ro-home, autodirs de GUI) roda livre no tmpfs
-     * de verdade, sem nunca tocar o FUSE do vault sem querer. */
+    if (cfg->iso_net_veth) {
+        close(net_ready_pipe[0]);
+        close(net_sync_pipe[1]);
+        char nr = 'r';
+        write(net_ready_pipe[1], &nr, 1);
+        close(net_ready_pipe[1]);
+        char ns;
+        if (read(net_sync_pipe[0], &ns, 1) != 1) {
+            fprintf(stderr, "[RUN] net_sync_pipe read failed\n");
+        }
+        close(net_sync_pipe[0]);
+
+        const char *j_ip = cfg->iso_net_veth_ip ? cfg->iso_net_veth_ip : "10.0.0.3";
+        const char *g_ip = cfg->iso_net_veth_gw ? cfg->iso_net_veth_gw : "10.0.0.2";
+        vsb_configure_veth_inside(j_ip, g_ip, "nuk4sd-veth");
+
+        if (cfg->iso_nfilter) {
+            const char *j_name = cfg->iso_nfilter_jail ? cfg->iso_nfilter_jail : "nuk4sd_jail";
+            if (nfilterflag(j_name, j_ip) != 0) {
+                fprintf(stderr,
+                        "[RUN][FATAL] nfilterflag failed for jail '%s' -- "
+                        "aborting to prevent execution without network egress filter\n", j_name);
+                _exit(1);
+            }
+        }
+    }
+
     char vault_mount_point[PATH_MAX];
     snprintf(vault_mount_point, sizeof(vault_mount_point), "%s/vault", jail_root);
     if (mkdir(vault_mount_point, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "[RUN] mkdir subpasta do vault '%s': %s\n",
+        fprintf(stderr, "[RUN] mkdir subfolder of vault '%s': %s\n",
                 vault_mount_point, strerror(errno));
         _exit(1);
     }
     if (mount(vault_path_orig, vault_mount_point, NULL, MS_BIND | MS_REC, NULL) != 0) {
-        fprintf(stderr, "[RUN] bind-mount vault→'%s': %s\n",
+        fprintf(stderr, "[RUN] bind-mount vault’'%s': %s\n",
                 vault_mount_point, strerror(errno));
         _exit(1);
     }
-    fprintf(stderr, "[RUN] jail_root: '%s' (tmpfs real; vault em '%s/vault')\n",
+    fprintf(stderr, "[RUN] jail_root: '%s' (real tmpfs; vault in '%s/vault')\n",
             jail_root, jail_root);
 
-    /* Prepara estrutura de jail (dev/proc/tmp/bin/lib/...) em jail_root,
-     * que agora É tmpfs real de verdade — nunca mais toca o FUSE do vault
-     * sem querer. */
     vsb_prepare_jail(vault_path, gui_mode);
 
-    /* Hostname isolado dentro do UTS namespace */
     if (cfg->iso_unshare_uts && cfg->iso_hostname)
         sethostname(cfg->iso_hostname, strlen(cfg->iso_hostname));
 
-    /* Detach do terminal */
     if (cfg->iso_new_session)
         setsid();
 
-    /* Fork para virar PID 1 dentro do PID namespace */
     pid_t ns_pid = fork();
     if (ns_pid < 0)  { perror("[RUN] fork PID NS"); _exit(1); }
     if (ns_pid > 0)  {
@@ -1188,29 +2055,28 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         if (WIFSIGNALED(st)) {
             int sig = WTERMSIG(st);
             fprintf(stderr,
-                "[RUN][FATAL] processo filho (PID 1 do namespace) morto pelo sinal %d (%s)"
-                " — possível violação de seccomp/allowlist se sig=31 (SIGSYS). "
-                "Verifique 'dmesg' por 'audit: type=1326 ... comm=\"<processo>\" syscall=N'.\n",
+                "[RUN][FATAL] child process (PID 1 of namespace) killed by signal %d (%s)"
+                "  possible seccomp/allowlist violation if sig=31 (SIGSYS). "
+                "Check 'dmesg' for 'audit: type=1326 ... comm=\"<process>\" syscall=N'.\n",
                 sig, strsignal(sig));
             _exit(128 + sig);
         }
         _exit(WIFEXITED(st) ? WEXITSTATUS(st) : 1);
     }
 
-    /* ══ PID 1 dentro do namespace ═══ */
+    /* •• PID 1 inside namespace ••• */
 
-    /* Torna o mount tree privado para que os bind mounts não vazem */
     if (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0)
         perror("[RUN] MS_PRIVATE / (non-fatal)");
     cli_log_mount_event("none", "/", "private", MS_REC | MS_PRIVATE,
                         (mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0 ? errno : 0));
 
-    /* ── Bind mounts --ro / --rw / --blacklist ──────────────────────────── */
+    /*  Bind mounts --ro / --rw / --blacklist  */
     for (int i = 0; i < cfg->bind_count; i++) {
         const char *src = cfg->binds[i].path;
         struct stat st;
         if (stat(src, &st) != 0) {
-            fprintf(stderr, "[RUN] bind: '%s' not found — skipping\n", src);
+            fprintf(stderr, "[RUN] bind: '%s' not found  skipping\n", src);
             continue;
         }
 
@@ -1221,7 +2087,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             snprintf(dst, sizeof(dst), "%s%s", vault_path, src);
 
             if (!bind_path_is_safe(vault_path, dst)) {
-                fprintf(stderr, "[RUN] --ro '%s': path escapes vault jail — refusing\n", src);
+                fprintf(stderr, "[RUN] --ro '%s': path escapes vault jail  refusing\n", src);
                 cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REC, EPERM);
                 break;
             }
@@ -1233,7 +2099,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                     break;
                 }
             } else {
-                /* garante o diretório pai antes de criar o arquivo de destino */
                 char parent[PATH_MAX];
                 snprintf(parent, sizeof(parent), "%s", dst);
                 char *slash = strrchr(parent, '/');
@@ -1250,10 +2115,9 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             }
             if (mount(src, dst, NULL, MS_BIND | MS_REC, NULL) == 0) {
                 mount(NULL, dst, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
-                /* FIX #3: verificar que dst não é symlink fora do jail (race TOCTOU) */
                 int check_fd = open(dst, O_PATH | O_NOFOLLOW | O_CLOEXEC);
                 if (check_fd < 0 && errno == ELOOP) {
-                    fprintf(stderr, "[RUN] --ro '%s': symlink escape detectado — desmontando\n", src);
+                    fprintf(stderr, "[RUN] --ro '%s': symlink escape detected  unmounting\n", src);
                     umount2(dst, MNT_DETACH);
                     cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REC, EPERM);
                 } else {
@@ -1271,12 +2135,11 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             snprintf(dst, sizeof(dst), "%s%s", vault_path, src);
 
             if (!bind_path_is_safe(vault_path, dst)) {
-                fprintf(stderr, "[RUN] --rw '%s': path escapes vault jail — refusing\n", src);
+                fprintf(stderr, "[RUN] --rw '%s': path escapes vault jail  refusing\n", src);
                 cli_log_mount_event(src, dst, "bind-rw", MS_BIND | MS_REC, EPERM);
                 break;
             }
 
-            /* cria o destino ANTES de montar */
             if (S_ISDIR(st.st_mode)) {
                 if (cli_mkdir_p(dst, 0755) != 0) {
                     fprintf(stderr, "[RUN] --rw mkdir_p '%s': %s\n", dst, strerror(errno));
@@ -1303,14 +2166,11 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                 fprintf(stderr, "[RUN] --rw bind '%s': %s\n", src, strerror(errno));
                 cli_log_mount_event(src, dst, "bind-rw", MS_BIND | MS_REC, errno);
             } else {
-                /* FIX #8: remount com MS_NOSUID|MS_NODEV para prevenir escalonamento
-                 * via device nodes ou SUID binaries dentro do bind-rw */
                 mount(NULL, dst, NULL,
                       MS_BIND | MS_REMOUNT | MS_NOSUID | MS_NODEV | MS_REC, NULL);
-                /* FIX #3: verificar symlink escape pós-mount */
                 int check_fd = open(dst, O_PATH | O_NOFOLLOW | O_CLOEXEC);
                 if (check_fd < 0 && errno == ELOOP) {
-                    fprintf(stderr, "[RUN] --rw '%s': symlink escape detectado — desmontando\n", src);
+                    fprintf(stderr, "[RUN] --rw '%s': symlink escape detected  unmounting\n", src);
                     umount2(dst, MNT_DETACH);
                     cli_log_mount_event(src, dst, "bind-rw", MS_BIND | MS_REC, EPERM);
                 } else {
@@ -1321,7 +2181,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             break;
         }
         case BIND_BLACKLIST:
-            /* Diretório: monta tmpfs vazio sobre ele (tamanho 0 = somente leitura) */
             if (S_ISDIR(st.st_mode)) {
                 if (mount("tmpfs", src, "tmpfs",
                           MS_NOSUID | MS_NODEV | MS_RDONLY, "size=0") != 0) {
@@ -1334,7 +2193,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                                         MS_NOSUID | MS_NODEV | MS_RDONLY, 0);
                 }
             } else {
-                /* Arquivo: bind monta /dev/null sobre ele */
                 if (mount("/dev/null", src, NULL, MS_BIND, NULL) != 0) {
                     fprintf(stderr, "[RUN] --blacklist file '%s': %s\n",
                             src, strerror(errno));
@@ -1347,20 +2205,17 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         }
     }
 
-    /* ── --ro-home / --rw-home: Mapeia o $HOME original para dentro do jail ─── */
+    /*  --ro-home / --rw-home: Maps original $HOME into jail  */
     if (cfg->iso_ro_home || cfg->iso_rw_home) {
         const char *sudo_user = getenv("SUDO_USER");
         char home[PATH_MAX] = {0};
         if (sudo_user && *sudo_user) {
-            /* FIX #4: validar SUDO_USER contra charset seguro — recusar '/', '.', '\' etc.
-             * Previne path traversal: SUDO_USER=../../../../etc/shadow → /home/../../../../etc/shadow */
             bool sudo_user_safe = (strlen(sudo_user) < 64 &&
                                    strpbrk(sudo_user, "/.\\ :@!") == NULL);
             if (sudo_user_safe) {
                 snprintf(home, sizeof(home), "/home/%s", sudo_user);
             } else {
-                fprintf(stderr, "[RUN] SUDO_USER cont\u00e9m caracteres inv\u00e1lidos — ignorando (possivel path traversal)\n");
-                /* fallback para HOME ou getpwuid() abaixo */
+                fprintf(stderr, "[RUN] SUDO_USER contains invalid characters  ignoring (possible path traversal)\n");
             }
         }
         if (!home[0]) {
@@ -1379,25 +2234,16 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             char dst[VAULT_PATH_MAX];
             snprintf(dst, sizeof(dst), "%s%s", vault_path, home);
 
-            /* Antes de bind-montar o $HOME real, desvincula o FUSE
-             * endpoint órfão do vault que foi herdado via MS_BIND|MS_REC.
-             * Sem isso, o subdiretório .local/share/Nuk4sd fica como um
-             * dead-end FUSE e qualquer IO (ex: recently-used.xbel do GTK)
-             * falha com "endpoint desconectado". */
             if (cli_mkdir_p(dst, 0755) == 0) {
                 char nuk_fuse[VAULT_PATH_MAX];
                 snprintf(nuk_fuse, sizeof(nuk_fuse),
                          "%s%s/.local/share/Nuk4sd", vault_path, home);
-                umount2(nuk_fuse, MNT_DETACH); /* ignora EINVAL se não estava montado */
+                umount2(nuk_fuse, MNT_DETACH);
 
                 if (mount(home, dst, NULL, MS_BIND | MS_REC, NULL) == 0) {
                     if (cfg->iso_ro_home) {
                         mount(NULL, dst, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
                     } else {
-                        /* rw-home: após o bind, o Nuk4sd dentro do home
-                         * aparece novamente como FUSE (agora ligado ao
-                         * namespace do jail). Cobre com tmpfs para
-                         * evitar que o app acesse o cofre diretamente. */
                         char nuk_mnt[VAULT_PATH_MAX];
                         snprintf(nuk_mnt, sizeof(nuk_mnt),
                                  "%s%s/.local/share/Nuk4sd", vault_path, home);
@@ -1413,37 +2259,10 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         }
     }
 
-
-    /* --tmp-home: movido para depois do pivot_root() + remount de /tmp —
-     * ver bloco pós-isolamento mais abaixo. Montar aqui (pré-pivot) cria o
-     * diretório no /tmp do HOST, que fica órfão assim que pivot_root() troca
-     * a raiz — $HOME acaba apontando pra um path inexistente dentro do jail. */
-
-    /* ── --wayland: passa socket Wayland read-only ────────────────────────
-     * Dois problemas corrigidos aqui:
-     *
-     * 1) getuid() sozinho quebra quando invocado via `sudo`: nesse caso o
-     *    processo inteiro já roda como UID 0 desde o main(), então
-     *    getuid()==0 aponta pra /run/user/0 (que geralmente nem existe),
-     *    em vez do /run/user/<uid real> onde o compositor Wayland da
-     *    sessão gráfica realmente cria o socket. `sudo` exporta o UID
-     *    original em $SUDO_UID — usamos isso como fonte preferencial.
-     *
-     * 2) "wayland-0" estava hardcoded — nem todo mundo usa esse nome de
-     *    socket (pode ser wayland-1, etc, dependendo da sessão). Lemos
-     *    $WAYLAND_DISPLAY do ambiente e só caímos pro default se não
-     *    existir.
-     *
-     * Observação: se `sudo` foi chamado sem `-E` (ou sudoers sem
-     * env_keep pra essas variáveis), o próprio sudo já apaga
-     * $WAYLAND_DISPLAY antes do nosso processo nascer — nesse caso não
-     * tem o que o Nuk4sd faça sozinho; é preciso `sudo -E` ou configurar
-     * env_keep no sudoers para XDG_RUNTIME_DIR/WAYLAND_DISPLAY/DISPLAY. */
     if (cfg->iso_wayland) {
         char xdg[128];
         snprintf(xdg, sizeof(xdg), "/run/user/%d", (int)real_uid);
 
-        /* Cria ponto de montagem dentro do vault */
         char dst_xdg[VAULT_PATH_MAX];
         snprintf(dst_xdg, sizeof(dst_xdg), "%s%s", vault_path, xdg);
         mkdir(dst_xdg, 0700);
@@ -1455,8 +2274,8 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                       MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
         } else {
             fprintf(stderr,
-                "[RUN] --wayland: '%s' não encontrado (uid real=%d) — "
-                "socket Wayland não será montado\n", xdg, (int)real_uid);
+                "[RUN] --wayland: '%s' not found (real uid=%d)  "
+                "Wayland socket will not be mounted\n", xdg, (int)real_uid);
         }
 
         const char *host_wayland_display = getenv("WAYLAND_DISPLAY");
@@ -1477,7 +2296,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         setenv("GDK_BACKEND",     "wayland,x11",  1);
     }
 
-    /* ── --x11: passa socket X11 read-only ──────────────────────────────── */
+    /*  --x11: pass read-only X11 socket  */
     if (cfg->iso_x11) {
         const char *x11_src = "/tmp/.X11-unix";
         char x11_dst[VAULT_PATH_MAX];
@@ -1490,16 +2309,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                 mount(NULL, x11_dst, NULL,
                       MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
         }
-        /* mantém DISPLAY do ambiente pai */
 
-        /* XAUTHORITY: sem isso o X server recusa a conexão com
-         * "Authorization required, but no authorization protocol
-         * specified" — porque, sob `sudo`, $HOME normalmente vira
-         * /root, então o cookie MIT-MAGIC-COOKIE do usuário real (em
-         * ~<usuário real>/.Xauthority) nunca é encontrado. Resolvemos
-         * o UID/HOME reais (mesma lógica do --wayland) e priorizamos
-         * $XAUTHORITY já setado no ambiente, com fallback pro caminho
-         * padrão dentro do HOME do usuário real. */
         const char *xauth_src = getenv("XAUTHORITY");
         char xauth_fallback[VAULT_PATH_MAX];
         if (!xauth_src || !*xauth_src) {
@@ -1521,22 +2331,19 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                 setenv("XAUTHORITY", "/tmp/.Xauthority", 1);
             } else {
                 fprintf(stderr,
-                    "[RUN] --x11: XAUTHORITY '%s' não encontrado — "
-                    "conexão X11 provavelmente será recusada\n", xauth_src);
+                    "[RUN] --x11: XAUTHORITY '%s' not found  "
+                    "X11 connection will likely be refused\n", xauth_src);
             }
         }
     }
 
-    /* ── Sem display: remove ambas as vars ──────────────────────────────── */
     if (!cfg->iso_wayland && !cfg->iso_x11) {
         unsetenv("WAYLAND_DISPLAY");
         unsetenv("DISPLAY");
     }
 
-    /* ── --no-dbus: remove env + cobre socket ───────────────────────────── */
     if (cfg->iso_no_dbus) {
         const char *bus_addr = getenv("DBUS_SESSION_BUS_ADDRESS");
-        /* Cobre o socket físico com /dev/null antes de remover a variável */
         if (bus_addr && !strncmp(bus_addr, "unix:path=", 10)) {
             
             const char *sock = bus_addr + 10;
@@ -1548,7 +2355,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         unsetenv("DBUS_SESSION_BUS_ADDRESS");
     }
 
-    /* ── Devices básicos dentro do vault ────────────────────────────────── */
     {
         char j_null[VAULT_PATH_MAX], j_zero[VAULT_PATH_MAX], j_tty[VAULT_PATH_MAX];
         snprintf(j_null, sizeof(j_null), "%s/dev/null", vault_path);
@@ -1559,7 +2365,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         mount("/dev/tty",  j_tty,  NULL, MS_BIND, NULL);
     }
 
-    /* ── /proc dentro do vault (antes do pivot) ─────────────────────────── */
     if (!cfg->iso_no_proc) {
         char j_proc[VAULT_PATH_MAX];
         snprintf(j_proc, sizeof(j_proc), "%s/proc", vault_path);
@@ -1568,58 +2373,8 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
               MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL);
     }
 
-    /* ── /tmp tmpfs dentro do vault ───────────────────────────────────────
-     * REMOVIDO: este mount pré-pivot era redundante — o remount pós-pivot
-     * (mais abaixo, logo após pivot_root()) sempre sobrescreve /tmp de
-     * qualquer forma. Montar tmpfs aqui só servia pra soterrar qualquer
-     * --ro/--rw que o usuário tenha aplicado sob /tmp antes deste ponto.
-     *
-     * LIMITAÇÃO CONHECIDA: qualquer --ro/--rw/--blacklist cujo destino
-     * caia sob /tmp ainda é sobrescrito pelo remount pós-pivot de /tmp
-     * (necessário para --tmp-size e para dar um /tmp limpo por padrão).
-     * Fix definitivo requer mover o loop de bind mounts pra depois desse
-     * remount — fica registrado como TODO para o refactor de
-     * vsb_apply_binds() já planejado. */
-
-    /* ── GUI auto-dirs: monta /usr /lib /lib64 /etc/fonts + arquivos /etc
-     *    críticos para o dynamic linker e apps GUI read-only ──────────────
-     *
-     * Diretórios montados com MS_BIND|MS_REC|RDONLY:
-     *   /usr /lib /lib64        — binários e bibliotecas do sistema
-     *   /etc/fonts              — fontconfig (GTK/Qt precisam)
-     *   /etc/alternatives       — update-alternatives links
-     *   /etc/ld.so.conf.d       — paths extras do dynamic linker
-     *   /etc/ssl                — certificados TLS (HTTPS)
-     *   /sys/dev/char           — device numbers (udev queries)
-     *   /sys/devices            — árvore real dos dispositivos PCI/DRM: os
-     *                             symlinks em /sys/dev/char/MAJOR:MINOR
-     *                             apontam pra cá. Sem isso, o Mesa segue o
-     *                             link e cai num caminho inexistente dentro
-     *                             do jail — "MESA-LOADER: failed to
-     *                             retrieve device information" / "egl:
-     *                             failed to create dri2 screen".
-     *   /sys/class              — mesma razão: alguns loaders (libdrm,
-     *                             udev) consultam /sys/class/drm além do
-     *                             caminho via /sys/dev/char.
-     *
-     * Arquivos bind-montados individualmente (read-only):
-     *   /etc/ld.so.cache        — cache do dynamic linker: SEM ISSO o
-     *                             ld-linux não resolve as .so do Firefox
-     *                             e o processo termina antes de main().
-     *   /etc/nsswitch.conf      — resolução NSS: getpwuid/getgrnam/
-     *                             gethostbyname usados pelo GLib/Firefox.
-     *   /etc/passwd /etc/group  — getpwuid() para HOME, username, etc.
-     *   /etc/localtime          — fuso horário: glib chama no startup.
-     *   /etc/resolv.conf        — DNS: sem isso Firefox não resolve nomes.
-     *
-     * Nota: /etc/ssl já inclui /etc/ssl/certs (certificados raiz TLS).
-     * ─────────────────────────────────────────────────────────────────── */
     if (gui_mode) {
         const char *host_dirs[] = {
-            /* Ordem importa: /usr precisa vir antes de /usr/share/icons.
-             * A entrada explícita /usr/share/icons garante que os ícones do
-             * host sobrescrevem qualquer esqueleto físico do vault, evitando
-             * o erro "endpoint desconectado" do GTK (evince, gnome-calc). */
             "/usr", "/lib", "/lib64",
             "/usr/share/icons",
             "/etc/fonts", "/etc/alternatives",
@@ -1635,24 +2390,12 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             snprintf(dst, sizeof(dst), "%s%s", vault_path, host_dirs[i]);
 
             if (S_ISDIR(hst.st_mode) && cli_mkdir_p(dst, 0755) != 0) {
-                /* Componente pai (ex: "/etc") ainda não existe dentro do
-                 * vault fresco — mkdir_p cria a árvore inteira. Sem isso,
-                 * um mkdir() de um nível só falhava com ENOENT pra
-                 * "/etc/fonts" e "/etc/alternatives" (pai "/etc" ausente),
-                 * o mount() seguinte falhava também, e nada disso era
-                 * logado: /etc inteiro simplesmente não existia dentro do
-                 * jail e programas GUI (fontconfig/NSS) morriam cedo. */
                 fprintf(stderr, "[RUN] gui-autodir mkdir_p '%s': %s\n", dst, strerror(errno));
                 cli_log_mount_event(host_dirs[i], dst, "gui-autodir", MS_BIND | MS_REC, errno);
 
                 continue;
             }
-            /* Descarta o submount FUSE herdado do vault bind-mount antes de
-             * sobrescrever com o path real do host. Sem isso, o kernel
-             * mantém os stubs FUSE do cofre como dead-ends dentro da árvore
-             * do /usr, e o GTK morre com "endpoint desconectado" ao tentar
-             * abrir ícones (ex: Mint-X/status/16/image-missing.png). */
-            umount2(dst, MNT_DETACH); /* ignora EINVAL se não tinha nada montado */
+            umount2(dst, MNT_DETACH);
             if (mount(host_dirs[i], dst, NULL, MS_BIND | MS_REC, NULL) == 0) {
                 mount(NULL, dst, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
                 cli_log_mount_event(host_dirs[i], dst, "gui-autodir", MS_BIND | MS_REC | MS_RDONLY, 0);
@@ -1663,8 +2406,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         }
 
 
-        /* Arquivos /etc individuais — bind-mount de arquivo único (não dir)
-         * Precisam do diretório pai criado antes do open(O_CREAT).        */
         const char *etc_files[] = {
             "/etc/ld.so.cache",
             "/etc/nsswitch.conf",
@@ -1679,7 +2420,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             if (stat(etc_files[i], &est) != 0) continue;
             char dst[VAULT_PATH_MAX];
             snprintf(dst, sizeof(dst), "%s%s", vault_path, etc_files[i]);
-            /* garante o diretório pai dentro do vault */
             char par[VAULT_PATH_MAX];
             snprintf(par, sizeof(par), "%s", dst);
             char *sl = strrchr(par, '/');
@@ -1695,23 +2435,12 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                 cli_log_mount_event(etc_files[i], dst, "gui-etc-file", MS_BIND, errno);
             }
         }
-
-        /* ── Variáveis de ambiente GTK/GDK: loaders de imagem e ícones ──────
-         * Sem GDK_PIXBUF_MODULE_FILE, o GTK não sabe onde estao os decoders
-         * de PNG/SVG/etc, então qualquer ícone falha com "image format not
-         * recognized" e o app trava (evince, gnome-calculator, etc).
-         * Colocamos a variável apontando para o loaders.cache do host que
-         * ja foi bind-montado via /usr. */
-        /* O ambiente GTK herda o PATH do host. Tentar forçar o 
-         * GDK_PIXBUF_MODULE_FILE frequentemente quebra os loaders embutidos
-         * de PNG, causando o erro "image format not recognized" com GResource. */
     }
 
-    /*═
-     *  DESKTOP RUNTIME — audio, dbus, gpu, xdg-runtime, dev, display
+    /*•
+     *  DESKTOP RUNTIME  audio, dbus, gpu, xdg-runtime, dev, display
      * ===================================================================== */
 
-    /* Helper: garante /run/user/$UID dentro do vault */
 #define ENSURE_XDG_DIR(xdg_buf, xdg_buf_sz)                                    \
     do {                                                                       \
         uid_t _ru_uid = real_uid;                                   \
@@ -1723,7 +2452,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         snprintf((xdg_buf), (xdg_buf_sz), "/run/user/%d", (int)_ru_uid);       \
     } while(0)
 
-    /* ── --xdg-runtime: monta /run/user/$UID inteiro (wayland+pulse+bus) ─ */
     if (cfg->iso_xdg_runtime) {
         char xdg[128]; ENSURE_XDG_DIR(xdg, sizeof(xdg));
         char xdg_dst[VAULT_PATH_MAX];
@@ -1736,12 +2464,9 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         setenv("XDG_RUNTIME_DIR", xdg, 1);
     }
 
-    /* ── --audio: PipeWire + PulseAudio ─────────────────────────────────── */
     if (cfg->iso_audio) {
         char xdg[128]; ENSURE_XDG_DIR(xdg, sizeof(xdg));
-        /* Sockets individuais apenas se xdg-runtime não montou tudo */
         if (!cfg->iso_xdg_runtime) {
-            /* PipeWire socket */
             char pw_src[256], pw_dst[VAULT_PATH_MAX];
             snprintf(pw_src, sizeof(pw_src), "%s/pipewire-0", xdg);
             snprintf(pw_dst, sizeof(pw_dst), "%s%s/pipewire-0", vault_path, xdg);
@@ -1750,7 +2475,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                 int fd = open(pw_dst, O_CREAT|O_WRONLY, 0600); if (fd>=0) close(fd);
                 mount(pw_src, pw_dst, NULL, MS_BIND, NULL);
             }
-            /* PulseAudio socket dir */
             char pulse_src[256], pulse_dst[VAULT_PATH_MAX];
             snprintf(pulse_src, sizeof(pulse_src), "%s/pulse", xdg);
             snprintf(pulse_dst, sizeof(pulse_dst), "%s%s/pulse", vault_path, xdg);
@@ -1759,7 +2483,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                 mount(pulse_src, pulse_dst, NULL, MS_BIND | MS_REC, NULL);
             }
         }
-        /* Env vars de audio */
         char xdg_env[128];
         snprintf(xdg_env, sizeof(xdg_env), "/run/user/%d", (int)real_uid);
         setenv("PIPEWIRE_RUNTIME_DIR", xdg_env, 1);
@@ -1769,7 +2492,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         setenv("PULSE_SERVER", pulse_addr, 1);
     }
 
-    /* ── --dbus session: /run/user/$UID/bus ─────────────────────────────── */
     if (cfg->iso_dbus_session && !cfg->iso_xdg_runtime) {
         char xdg[128]; ENSURE_XDG_DIR(xdg, sizeof(xdg));
         char bus_src[256], bus_dst[VAULT_PATH_MAX];
@@ -1787,7 +2509,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         setenv("DBUS_SESSION_BUS_ADDRESS", addr, 1);
     }
 
-    /* ── --dbus system: /run/dbus/system_bus_socket ──────────────────────── */
     if (cfg->iso_dbus_system) {
         const char *sys_src = "/run/dbus/system_bus_socket";
         char sys_dir[VAULT_PATH_MAX], sys_dst[VAULT_PATH_MAX];
@@ -1802,7 +2523,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/run/dbus/system_bus_socket", 1);
     }
 
-    /* ── dbus: machine-id — lido pelo GLib/Firefox antes de qualquer socket */
     if (cfg->iso_dbus_session || cfg->iso_dbus_system || cfg->iso_xdg_runtime) {
         const char *srcs[] = { "/var/lib/dbus/machine-id", "/etc/machine-id", NULL };
         for (int i = 0; srcs[i]; i++) {
@@ -1810,11 +2530,9 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             if (stat(srcs[i], &mst) != 0) continue;
             char dst[VAULT_PATH_MAX];
             snprintf(dst, sizeof(dst), "%s%s", vault_path, srcs[i]);
-            /* Garante o diretório pai */
             char par[VAULT_PATH_MAX]; snprintf(par, sizeof(par), "%s", dst);
             char *sl = strrchr(par, '/');
             if (sl) { *sl = '\0';
-                /* mkdir -p simplificado: tenta criar cada componente */
                 for (char *p = par+1; *p; p++) {
                     if (*p == '/') { *p='\0'; mkdir(par,0755); *p='/'; }
                 }
@@ -1825,7 +2543,6 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         }
     }
 
-    /* ── --gpu: /dev/dri (GPU hardware acceleration) ─────────────────────── */
     if (cfg->iso_gpu) {
         char dri_dst[VAULT_PATH_MAX];
         snprintf(dri_dst, sizeof(dri_dst), "%s/dev/dri", vault_path);
@@ -1837,26 +2554,19 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         }
     }
 
-    /* ── --dev minimal/standard: nós /dev adicionais ───────────────────────
-     * Mesmo bug dos outros dois blocos (gui-autodir): o vault fresco não
-     * tem NENHUM "/dev" dentro dele. open(dst, O_CREAT) e mkdir(shm_dst)
-     * assumiam que o pai "/dev" já existia — sem isso, ambos falhavam com
-     * ENOENT silenciosamente, então /dev/urandom, /dev/random, /dev/shm e
-     * /dev/fuse nunca eram criados de fato, mesmo com --dev standard. */
     if (cfg->iso_dev_level >= 1) {
         char dev_dir[VAULT_PATH_MAX];
         snprintf(dev_dir, sizeof(dev_dir), "%s/dev", vault_path);
         if (cli_mkdir_p(dev_dir, 0755) != 0)
             fprintf(stderr, "[RUN] --dev: mkdir_p '%s': %s\n", dev_dir, strerror(errno));
 
-        /* minimal: null, zero, tty, urandom, random, shm */
         const char *devs[] = { "/dev/null", "/dev/zero", "/dev/tty", "/dev/urandom", "/dev/random", NULL };
         for (int i = 0; devs[i]; i++) {
             char dst[VAULT_PATH_MAX];
             snprintf(dst, sizeof(dst), "%s%s", vault_path, devs[i]);
             int fd = open(dst, O_CREAT|O_WRONLY, 0444);
             if (fd >= 0) close(fd);
-            else fprintf(stderr, "[RUN] --dev: criar node '%s': %s\n", dst, strerror(errno));
+            else fprintf(stderr, "[RUN] --dev: create node '%s': %s\n", dst, strerror(errno));
             if (mount(devs[i], dst, NULL, MS_BIND, NULL) != 0)
                 fprintf(stderr, "[RUN] --dev: bind '%s': %s\n", devs[i], strerror(errno));
         }
@@ -1865,63 +2575,32 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         if (mkdir(shm_dst, 01777) != 0 && errno != EEXIST)
             fprintf(stderr, "[RUN] --dev: mkdir '%s': %s\n", shm_dst, strerror(errno));
         if (mount("tmpfs", shm_dst, "tmpfs", MS_NOSUID|MS_NODEV, "size=256m") != 0)
-            fprintf(stderr, "[RUN] --dev: mount tmpfs em '%s': %s\n", shm_dst, strerror(errno));
+            fprintf(stderr, "[RUN] --dev: mount tmpfs on '%s': %s\n", shm_dst, strerror(errno));
     }
     if (cfg->iso_dev_level >= 2) {
-        /* standard: adiciona /dev/fuse para apps que usam FUSE interno */
         char fuse_dst[VAULT_PATH_MAX];
         snprintf(fuse_dst, sizeof(fuse_dst), "%s/dev/fuse", vault_path);
         struct stat fst;
         if (stat("/dev/fuse", &fst) == 0) {
             int fd = open(fuse_dst, O_CREAT|O_WRONLY, 0660);
             if (fd >= 0) close(fd);
-            else fprintf(stderr, "[RUN] --dev: criar node '%s': %s\n", fuse_dst, strerror(errno));
+            else fprintf(stderr, "[RUN] --dev: create node '%s': %s\n", fuse_dst, strerror(errno));
             if (mount("/dev/fuse", fuse_dst, NULL, MS_BIND, NULL) != 0)
                 fprintf(stderr, "[RUN] --dev: bind '/dev/fuse': %s\n", strerror(errno));
         }
     }
 
-    /* ── --display/:--wayland-display: override explícito de display ────── */
     if (cfg->iso_display)
         setenv("DISPLAY", cfg->iso_display, 1);
     if (cfg->iso_wayland_disp)
         setenv("WAYLAND_DISPLAY", cfg->iso_wayland_disp, 1);
 
-    /* ── Firefox: desativa o sandbox INTERNO do content process ──────────
-     *
-     * O Nuk4sd já dropa TODAS as Linux Capabilities (Layer 4) antes do
-     * exec, incluindo CAP_SYS_CHROOT. O Firefox, por padrão, tenta montar
-     * seu PRÓPRIO sandbox de content-process (chamando chroot()/capset()
-     * de novo, um nível "dentro" do nosso). Isso sempre falha aqui —
-     * é exatamente o que aparece em TODA execução:
-     *
-     *   [N] Sandbox: capset (drop all): EPERM
-     *   [N] Sandbox: capset (chroot helper): EPERM
-     *   [N] Sandbox: chroot: EPERM
-     *
-     * Builds recentes do Firefox tratam essa falha do sandbox interno
-     * como fatal para o content process conseguir *renderizar* — o
-     * processo não crasha, mas a aba fica permanentemente em branco
-     * (exatamente o sintoma reportado: janela abre, título "Firefox"
-     * aparece, mas a página nunca desenha nada, mesmo depois de vários
-     * minutos, até fechar).
-     *
-     * Como o Nuk4sd JÁ isola o processo inteiro (user/mount/pid
-     * namespaces + seccomp-BPF + pivot_root + cap drop total), o
-     * sandbox aninhado do Firefox é redundante aqui — desativá-lo não
-     * é uma regressão de segurança relevante neste contexto. */
     if (gui_mode) {
-        // setenv("MOZ_DISABLE_CONTENT_SANDBOX", "1", 1);
         setenv("MOZ_NO_REMOTE", "1", 1);
     }
 #undef ENSURE_XDG_DIR
 
-    /* ── [Camada 3] Isolamento de filesystem ────────────────────────────── *
-     *  --chroot : mais simples, funciona sem suporte pleno a mount NS.     *
-     *  padrão   : pivot_root — mais seguro, sem acesso ao oldroot.         *
-     *                                                                       *
-     *  Nota: chroot() funciona dentro do user namespace porque UID 0 do    *
-     *  namespace tem CAP_SYS_CHROOT internamente, sem exigir root no host. */
+    /*  [Layer 3] Filesystem Isolation  */
     if (cfg->iso_use_chroot) {
         if (chroot(vault_path) != 0) {
             fprintf(stderr, "[RUN] chroot '%s': %s\n", vault_path, strerror(errno));
@@ -1933,10 +2612,10 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             _exit(1);
         }
         cli_log_pivot_root(vault_path, 0);
-        fprintf(stderr, "[RUN] [INFO] filesystem isolado via chroot\n");
+        fprintf(stderr, "[RUN] [INFO] filesystem isolated via chroot\n");
     } else {
         if (vsb_pivot_root(vault_path, !cfg->iso_no_proc) != 0) {
-            fprintf(stderr, "[RUN] pivot_root '%s': %s — tente --chroot como fallback\n",
+            fprintf(stderr, "[RUN] pivot_root '%s': %s  try --chroot as fallback\n",
                     vault_path, strerror(errno));
             cli_log_pivot_root(vault_path, errno);
             _exit(1);
@@ -1944,132 +2623,60 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         cli_log_pivot_root(vault_path, 0);
     }
 
-    /* ── Remonta /proc fresco após isolamento ──────────────────────────────
-     *
-     * Problema que este bloco resolve:
-     *   Antes do pivot_root(), o código monta /proc do HOST via bind-mount
-     *   (ou herda via MS_REC do namespace pai). Esse /proc contém os PIDs
-     *   reais do host — visíveis dentro do sandbox mesmo após o pivot.
-     *   No teste de escape, o sandbox mostrava 5 PIDs externos em vez de
-     *   só o PID 1 interno.
-     *
-     * Solução em 3 etapas com tratamento de erro em cada:
-     *
-     *   [1] umount2(MNT_DETACH): desacopla o /proc herdado sem bloquear
-     *       em processos que ainda têm handles abertos. MNT_DETACH é o
-     *       equivalente ao "lazy unmount" — o mountpoint some da árvore
-     *       imediatamente mas o kernel mantém a referência enquanto há
-     *       processos com FDs abertos. Falha esperada se já foi
-     *       desmontado (EINVAL) — tratamos como não-fatal.
-     *
-     *   [2] mkdir("/proc", 0555): cria o mountpoint se não existir.
-     *       Se já existe (EEXIST) é OK — continuamos.
-     *       Qualquer outro erro (EROFS, EACCES) é registrado mas não
-     *       mata o processo, pois /proc pode já existir do jail_prepare.
-     *
-     *   [3] mount("proc", "/proc", "proc", MS_NOSUID|MS_NOEXEC|MS_NODEV):
-     *       Monta um procfs NOVO, que enxerga APENAS os PIDs do PID
-     *       namespace atual (criado pelo unshare(CLONE_NEWPID) mais cedo).
-     *       Resultado: dentro do sandbox, /proc lista só PID 1 (o próprio
-     *       processo) e seus filhos — zero PIDs do host visíveis.
-     *       Se falhar, o sandbox continua mas registramos o erro no audit
-     *       log para que o operador saiba que o /proc está "sujo".
-     *
-     * Flags de montagem:
-     *   MS_NOSUID  — binários setuid em /proc não ganham privilégio
-     *   MS_NOEXEC  — não executa binários direto de /proc
-     *   MS_NODEV   — ignora device nodes em /proc (não há, mas defesa extra)
-     */
     if (!cfg->iso_no_proc && cfg->iso_use_chroot) {
-        /* [1] Desacopla /proc herdado do host (lazy — não bloqueia) */
         if (umount2("/proc", MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT) {
             vault_log(LOG_WARN,
-                      "[SANDBOX] umount2('/proc', MNT_DETACH): %s — "
-                      "continuando (proc legado pode vazar PIDs do host)",
+                      "[SANDBOX] umount2('/proc', MNT_DETACH): %s  "
+                      "continuing (legacy proc may leak host PIDs)",
                       strerror(errno));
         }
 
-        /* [2] Garante que o mountpoint existe */
         if (mkdir("/proc", 0555) != 0 && errno != EEXIST) {
             vault_log(LOG_WARN,
-                      "[SANDBOX] mkdir('/proc'): %s — "
-                      "tentando montar mesmo assim",
+                      "[SANDBOX] mkdir('/proc'): %s  "
+                      "trying mount anyway",
                       strerror(errno));
         }
 
-        /* [3] Monta procfs novo, scoped ao PID namespace atual */
         if (mount("proc", "/proc", "proc",
                   MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0) {
             vault_log(LOG_ERROR,
-                      "[SANDBOX] mount('/proc', procfs): %s — "
-                      "sandbox pode expor PIDs do host! "
-                      "Use --no-proc para desativar /proc completamente.",
+                      "[SANDBOX] mount('/proc', procfs): %s  "
+                      "sandbox may expose host PIDs! "
+                      "Use --no-proc to disable /proc completely.",
                       strerror(errno));
-            /* Não mata o processo: apps como bash, ps e top precisam de
-             * /proc, mas se o mount falhou o sandbox ainda está isolado
-             * em todos os outros vetores (caps, seccomp, filesystem). */
         } else {
             vault_log(LOG_INFO,
-                      "[SANDBOX] /proc remontado (procfs fresco, PID-namespace scoped) "
-                      "— PIDs do host não visíveis dentro do sandbox.");
+                      "[SANDBOX] /proc remounted (fresh procfs, PID-namespace scoped) "
+                      " host PIDs not visible inside sandbox.");
         }
     } else {
-        /* --no-proc: desacopla qualquer /proc legado sem montar nada novo */
-        umount2("/proc", MNT_DETACH); /* ignora erro: pode não haver nada */
-        vault_log(LOG_INFO, "[SANDBOX] --no-proc: /proc desativado.");
+        umount2("/proc", MNT_DETACH);
+        vault_log(LOG_INFO, "[SANDBOX] --no-proc: /proc disabled.");
     }
     {
         int sz = cfg->iso_tmp_size_mb ? cfg->iso_tmp_size_mb : 64;
         char sz_opt[32]; snprintf(sz_opt, sizeof(sz_opt), "size=%dm", sz);
         mkdir("/tmp", 01777);
         if (mount("tmpfs", "/tmp", "tmpfs", MS_NOSUID | MS_NODEV, sz_opt) != 0)
-            perror("[RUN] mount /tmp post-isolamento (non-fatal)");
+            perror("[RUN] mount /tmp post-isolation (non-fatal)");
     }
 
-    /* ── --tmp-home: $HOME efêmero em tmpfs ───────────────────────────────
-     * Precisa rodar AQUI (pós pivot_root() + remount de /tmp), não antes.
-     * mkdtemp() antes do pivot cria o diretório no /tmp do HOST, que fica
-     * órfão assim que pivot_root() troca a raiz — $HOME acabava apontando
-     * pra um path que não existe dentro do jail. Rodando depois, "/tmp"
-     * já se refere ao /tmp do próprio vault, então o path resultante é
-     * válido para o processo que vamos exec() a seguir. */
     if (cfg->iso_tmp_home) {
         char th[] = "/tmp/Nuk4sd-home-XXXXXX";
-        char *dir = mkdtemp(th);   /* mkdtemp() já cria o diretório */
+        char *dir = mkdtemp(th);
         if (dir) {
             setenv("HOME", dir, 1);
 
-            /* [ATUALIZADO] Com o mapa de linha única (ver userns.c), o
-             * processo já É o UID real desde o início — não existe mais uma
-             * fase "ainda root" seguida de um drop. Esse mkdtemp() já cria
-             * o diretório dono=real_uid diretamente. O chown() abaixo vira
-             * um no-op na maioria dos casos (já é o dono certo); mantido
-             * só como rede de segurança pro caso sudo, onde real_uid pode
-             * ser 0 de propósito (root real, sem redesign nenhum aqui). */
             if (gui_mode && real_uid != 0) {
                 if (chown(dir, real_uid, real_gid) != 0)
-                    perror("[RUN] --tmp-home chown para real_uid/real_gid");
+                    perror("[RUN] --tmp-home chown to real_uid/real_gid");
             }
         } else {
             perror("[RUN] --tmp-home mkdtemp");
         }
     }
 
-    /* [REDESIGN] O setresuid()/setresgid() que existia aqui não funciona
-     * mais e nunca vai funcionar de novo: dependia de um SEGUNDO ns-uid
-     * mapeado (real_uid -> real_uid) pra "cair" nele depois do jail
-     * montado. Esse segundo ns-uid não existe mais — o kernel rejeita
-     * (EINVAL) qualquer uid_map com o mesmo outside-id repetido em duas
-     * linhas (testado e confirmado diretamente, não é limitação de
-     * newuidmap/CAP_SETUID). Ver sandbox_write_uid_gid_map() em userns.c.
-     *
-     * Não é substituível por "trocar pra outro uid": qualquer outro ns-id
-     * mapearia pra um UID DIFERENTE do seu real, o que quebraria de novo o
-     * acesso ao FUSE/socket Wayland — o problema que resolvemos ao trocar
-     * pra mapa de linha única. O processo fica como ns-uid 0 (mapeado pro
-     * seu UID real) do início ao fim — sem "drop" no meio, porque não tem
-     * privilégio real sobrando pra dropar: capabilities já caem na Camada 4
-     * logo abaixo, que é a proteção que realmente importa aqui. */
     if (gui_mode) {
         const char *sudo_user = getenv("SUDO_USER");
         if (sudo_user && !cfg->iso_tmp_home) {
@@ -2079,7 +2686,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         }
     }
 
-    /* ── [Camada 4] Drop capabilities + NO_NEW_PRIVS ────────────────────── */
+    /*  [Layer 4] Drop capabilities + NO_NEW_PRIVS  */
     if (vsb_drop_caps() != 0) {
         fprintf(stderr, "[RUN] cap drop failed\n");
         cli_log_cap_drop(-1);
@@ -2087,29 +2694,14 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
     }
     cli_log_cap_drop(0);
 
-    /* Rlimits — valores das flags ou defaults ajustados por modo
-     *
-     * RLIMIT_AS (espaço de endereçamento virtual):
-     *   gui_mode → 8 GB: browsers (Firefox/Chromium) com JIT SpiderMonkey/V8
-     *     + processos de conteúdo + IPC + WebGL alocam agressivamente mmap()
-     *     para regiões de memória virtual muito maiores que a RAM física em
-     *     uso. Com 4 GB o content process morre com ENOMEM silenciosamente
-     *     antes de renderizar a primeira página.
-     *   modo CLI → 4 GB: conservador, suficiente para shells e utilitários.
-     *
-     * RLIMIT_FSIZE (tamanho máximo de arquivo escrito):
-     *   gui_mode → 1 GB: Firefox grava cache, SQLite, downloads na sessão.
-     *   modo CLI → 512 MB: suficiente para a maioria dos apps de terminal.
-     *
-     * Os valores explícitos das flags sempre sobrescrevem estes defaults. */
     {
         struct rlimit rl;
         int   p  = cfg->iso_max_procs    ? cfg->iso_max_procs    : 512;
         long  fs = cfg->iso_max_fsize_mb
                    ? (long)cfg->iso_max_fsize_mb * 1024 * 1024
                    : gui_mode
-                       ? (long)1024 * 1024 * 1024        /* GUI: cache + downloads   */
-                       : (long)512  * 1024 * 1024;       /* CLI: conservador         */
+                       ? (long)1024 * 1024 * 1024
+                       : (long)512  * 1024 * 1024;
         int   fd = cfg->iso_max_fds      ? cfg->iso_max_fds      : 4096;
         if (cfg->iso_max_mem_gb > 0) {
             long m = (long)cfg->iso_max_mem_gb * 1024 * 1024 * 1024;
@@ -2124,33 +2716,40 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         cli_log_rlimit("RLIMIT_NOFILE", fd, fd);
     }
 
-    /* ── [Camada 5] Seccomp-BPF (skipável via --no-seccomp para debug) ──── */
+    /*  [Layer 5] Seccomp-BPF  */
     if (cfg->iso_no_seccomp) {
-        fprintf(stderr, "[RUN] ⚠  --no-seccomp: BPF desativado (modo debug)\n");
+        fprintf(stderr, "[RUN] š   --no-seccomp: BPF disabled (debug mode)\n");
         cli_log_seccomp(0);
     } else {
         int permissive = cfg->permissive_sandbox || (gui_mode && !cfg->seccomp_strict);
         int friendly = cfg->friendly_sandbox || (gui_mode && !cfg->seccomp_strict);
         vsb_set_seccomp_mode(cfg->seccomp_strict ? 1 : 0, cfg->allow_clone3 ? 1 : 0,
                              friendly ? 1 : 0, permissive ? 1 : 0);
+        if (cfg->iso_adapter && cfg->iso_adapter[0]) {
+            vsb_set_seccomp_adapter(cfg->iso_adapter);
+        }
         vsb_set_mount_dev(cfg->iso_mount_dev);
         if (permissive) {
             vault_log(LOG_AUDIT,
-                      "[SECURITY] Modo amigável GUI ATIVO │ exec='%s' │ vault_id=%d │ pid=%d │ "
-                      "chroot/capset/setuid/setgid LIBERADOS no seccomp para sandbox interno do app.",
+                      "[SECURITY] Friendly GUI Mode ACTIVE ‚ exec='%s' ‚ vault_id=%d ‚ pid=%d ‚ "
+                      "chroot/capset/setuid/setgid ALLOWED in seccomp for app internal sandbox.",
                       cfg->run_exec ? cfg->run_exec : "?", cfg->vault_id, (int)getpid());
         }
 
-        /* [LANDLOCK] Terceira camada de MAC (restrição VFS) antes do Seccomp */
+        /* [LANDLOCK] Layer 3 MAC (VFS restriction) before Seccomp */
         if (!cfg->permissive_sandbox) {
-            /* Só aplica Landlock em modo estrito, pois modo permissivo permite tudo */
-            if (landlock_apply(cfg, vault_path) == 0) {
+            int ll_ret = landlock_apply(cfg, vault_path);
+            if (ll_ret == 0) {
                 if (cfg->verbose)
-                    printf("  → [Layer 5] Landlock MAC enforced (VFS restrictions active)\n");
+                    printf("  -> [Layer 5] Landlock MAC enforced (VFS restrictions active)\n");
+            } else if (ll_ret == -2) {
+                fprintf(stderr,
+                        "[SANDBOX][WARN] Landlock supported by kernel but failed -- "
+                        "VFS unrestricted. Check logs for details.\n");
             }
         }
 
-        /* [SECCOMP] Quarta camada de MAC (restrição de Syscalls) */
+        /* [SECCOMP] Layer 4 MAC (Syscall restriction) */
         if (vsb_apply_seccomp() != 0) {
             fprintf(stderr, "[RUN] seccomp load failed\n");
             cli_log_seccomp(-1);
@@ -2159,7 +2758,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         cli_log_seccomp(0);
     }
 
-    /* ── Monta argv final e execvp ──────────────────────────────────────── */
+    /*  Build final argv and execvp  */
     int total = 1 + cfg->run_argc;
     char **exec_argv = calloc((size_t)(total + 1), sizeof(char *));
     if (!exec_argv) _exit(1);
@@ -2169,16 +2768,11 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         exec_argv[i + 1] = cfg->run_argv[i];
     exec_argv[total] = NULL;
 
-    /* ── FIX #2: Fechar todos os FDs antes do execvp (CVE-2024-21626 pattern) ──
-     * Evita que o processo no sandbox herde FDs abertos apontando para paths
-     * do host via /proc/self/fd/N. close_range() é atômico (Linux 5.9+);
-     * fallback para loop manual em kernels mais antigos. */
+    /*  FIX #2: Close all FDs before execvp (CVE-2024-21626 pattern)  */
 #ifdef __linux__
     {
-        /* Tenta close_range() primeiro (Linux 5.9+, syscall 436) */
         long cr = syscall(436, 3, ~0U, 0); /* close_range(3, UINT_MAX, 0) */
         if (cr != 0) {
-            /* Fallback: loop manual */
             long max_fd = sysconf(_SC_OPEN_MAX);
             if (max_fd < 0) max_fd = 1024;
             for (long fd = 3; fd < max_fd; fd++)
@@ -2187,11 +2781,26 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
     }
 #endif
 
+    /*  --uuid: Cryptographic process identification in sandbox  */
+    if (cfg->iso_uuid) {
+        UuidArgs uargs = {
+            .pid = getpid(),
+            .original_binary = cfg->run_exec,
+            .pipe_fd = { -1, -1 }
+        };
+        setup_uuid(uargs);
+    }
+
     cli_log_exec(cfg->run_exec, exec_argv, total);
+
+    /*  --init: Mini-Init Supervisor PID 1 (zombie reaper for sshd/daemons)  */
+    if (cfg->iso_init) {
+        return nuk_mini_init(cfg->run_exec, exec_argv);
+    }
 
     execvp(cfg->run_exec, exec_argv);
     fprintf(stderr, "[RUN] execvp '%s': %s\n", cfg->run_exec, strerror(errno));
-    cli_log(CLI_LOG_ERROR, "EXEC", "execvp('%s') falhou: %s",
+    cli_log(CLI_LOG_ERROR, "EXEC", "execvp('%s') failed: %s",
             cfg->run_exec, strerror(errno));
     _exit(127);
 }
@@ -2207,18 +2816,18 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
 #endif /* __linux__ */
 
 /*
- *  Dispatcher principal
+ *  Main Dispatcher
  * */
 static int dispatch(CliConfig *cfg) {
     int ret = 0;
     uint32_t id = (uint32_t)cfg->vault_id;
 
-    /* ── Sem vault necessário ────────────────────────────────────────────── */
+    /*  No vault required  */
     if (cfg->op_help)    { print_help();                return 0; }
     if (cfg->op_version) { printf("Nuk4sd v0.9.30\n");  return 0; }
     if (cfg->op_ls)      { vault_list_ffi();            return 0; }
 
-    /* ── --new <nome> ────────────────────────────────────────────────────── */
+    /*  --new <name>  */
     if (cfg->new_name) {
         int vtype = cfg->protected_vault ? 1 : 0;
         char pass_buf[256] = {0}, cnf_buf[256] = {0};
@@ -2262,7 +2871,23 @@ static int dispatch(CliConfig *cfg) {
         return 0;
     }
 
-    /* ── Verifica se --vault <id> foi fornecido para operações que precisam ─ */
+    /*  Check if --vault <id> was provided for operations requiring it  */
+    bool is_vault_file_or_snap_op = (
+        cfg->op_add || cfg->op_extract || cfg->op_mv ||
+        cfg->op_cp || cfg->op_rm_file || cfg->op_mkdir ||
+        cfg->op_rmdir || cfg->op_tree || cfg->op_du ||
+        cfg->op_find || cfg->op_snapshot || cfg->op_snapshots ||
+        cfg->op_snapshot_delete || cfg->op_snapshot_restore ||
+        cfg->op_snapshot_diff ||
+        cfg->op_hash     || cfg->op_baseline  || cfg->op_verify ||
+        cfg->op_integrity|| cfg->op_repair    || cfg->op_diff   ||
+        cfg->op_backup   || cfg->op_restore   || cfg->op_import ||
+        cfg->op_lock     || cfg->op_lock_status|| cfg->op_force_unlock ||
+        cfg->op_key_info || cfg->op_key_rotate || cfg->op_rekey ||
+        cfg->op_stats    || cfg->op_usage     || cfg->op_inspect ||
+        cfg->op_history  || cfg->op_events
+    );
+
     bool needs_id = (cfg->op_info || cfg->op_files || cfg->op_status ||
                      cfg->op_scan || cfg->op_encrypt || cfg->op_decrypt ||
                      cfg->op_resolve || cfg->op_mount || cfg->op_umount ||
@@ -2271,7 +2896,7 @@ static int dispatch(CliConfig *cfg) {
                      cfg->op_passwd || cfg->op_rule || cfg->op_worm_status ||
                      cfg->worm_set || cfg->worm_clear ||
                      cfg->worm_protected_scan ||
-                     /* --run precisa de vault_id apenas quando não usa --no-fuse */
+                     is_vault_file_or_snap_op ||
                      (cfg->run_exec && !cfg->no_fuse));
 
     if (needs_id && cfg->vault_id < 0) {
@@ -2279,7 +2904,7 @@ static int dispatch(CliConfig *cfg) {
         return 1;
     }
 
-    /* ── Resolve senha quando necessário ───────────────────────────────── */
+    /*  Resolve password when required  */
     char pass_buf[256] = {0};
     char *pass = cfg->password;
     bool needs_pass = (cfg->op_encrypt || cfg->op_decrypt || cfg->op_rm ||
@@ -2293,9 +2918,290 @@ static int dispatch(CliConfig *cfg) {
         pass = pass_buf;
     }
 
-    /*══
-     *  Despacho por operação
-     *══ */
+    /*••
+     *  Dispatch by operation
+     *•• */
+
+    if (is_vault_file_or_snap_op) {
+        char vpath[VAULT_PATH_MAX];
+        if (vault_get_real_path_ffi(id, vpath, sizeof(vpath)) != 0) {
+            print_err("Vault not found or storage path unavailable.");
+            ret = 1;
+            goto cleanup;
+        }
+
+        if (cfg->op_add) {
+            if (!cfg->add_file) { print_err("--add requires <file>"); ret = 1; }
+            else ret = rust_vault_add(vpath, cfg->add_file, cfg->add_recursive, cfg->add_replace, cfg->add_preserve);
+        } else if (cfg->op_extract) {
+            if (!cfg->extract_file) { print_err("--extract requires <file>"); ret = 1; }
+            else {
+                const char *dest = cfg->extract_dest ? cfg->extract_dest : (cfg->export_dest ? cfg->export_dest : ".");
+                ret = rust_vault_extract(vpath, cfg->extract_file, dest, cfg->extract_force);
+            }
+        } else if (cfg->op_mv) {
+            if (!cfg->mv_src || !cfg->mv_dest) { print_err("--mv requires <src> and <dest>"); ret = 1; }
+            else ret = rust_vault_mv(vpath, cfg->mv_src, cfg->mv_dest);
+        } else if (cfg->op_cp) {
+            if (!cfg->cp_src || !cfg->cp_dest) { print_err("--cp requires <src> and <dest>"); ret = 1; }
+            else ret = rust_vault_cp(vpath, cfg->cp_src, cfg->cp_dest);
+        } else if (cfg->op_rm_file) {
+            if (!cfg->rm_file_target) { print_err("--rm-file requires <file>"); ret = 1; }
+            else ret = rust_vault_rm_file(vpath, cfg->rm_file_target);
+        } else if (cfg->op_mkdir) {
+            if (!cfg->mkdir_target) { print_err("--mkdir requires <dir>"); ret = 1; }
+            else ret = rust_vault_mkdir(vpath, cfg->mkdir_target);
+        } else if (cfg->op_rmdir) {
+            if (!cfg->rmdir_target) { print_err("--rmdir requires <dir>"); ret = 1; }
+            else ret = rust_vault_rmdir(vpath, cfg->rmdir_target);
+        } else if (cfg->op_tree) {
+            ret = rust_vault_tree(vpath);
+        } else if (cfg->op_du) {
+            ret = rust_vault_du(vpath);
+        } else if (cfg->op_find) {
+            if (!cfg->find_pattern) { print_err("--find requires <pattern>"); ret = 1; }
+            else ret = rust_vault_find(vpath, cfg->find_pattern);
+        } else if (cfg->op_snapshot) {
+            ret = rust_vault_snapshot(vpath, cfg->snapshot_tag);
+        } else if (cfg->op_snapshots) {
+            ret = rust_vault_snapshots(vpath);
+        } else if (cfg->op_snapshot_delete) {
+            if (!cfg->snapshot_del_tag) { print_err("--snapshot-delete requires <tag>"); ret = 1; }
+            else ret = rust_vault_snapshot_delete(vpath, cfg->snapshot_del_tag);
+        } else if (cfg->op_snapshot_restore) {
+            if (!cfg->snapshot_restore_tag) { print_err("--snapshot-restore requires <tag>"); ret = 1; }
+            else ret = rust_vault_snapshot_restore(vpath, cfg->snapshot_restore_tag);
+        } else if (cfg->op_snapshot_diff) {
+            if (!cfg->snapshot_diff_tag1) { print_err("--snapshot-diff requires <tag1> [tag2]"); ret = 1; }
+            else ret = rust_vault_snapshot_diff(vpath, cfg->snapshot_diff_tag1, cfg->snapshot_diff_tag2);
+        /*  Cryptographic Integrity  */
+        } else if (cfg->op_hash) {
+            ret = rust_vault_hash(vpath, cfg->hash_target);
+        } else if (cfg->op_baseline) {
+            ret = rust_vault_baseline(vpath);
+        } else if (cfg->op_verify) {
+            ret = rust_vault_verify(vpath);
+        } else if (cfg->op_integrity) {
+            ret = rust_vault_integrity(vpath);
+        } else if (cfg->op_repair) {
+#ifdef __linux__
+            uint32_t wf = vault_worm_get_flags_ffi(id);
+            if (wf & WORM_PROTECT_WRITE) {
+                print_err("[WORM] --repair blocked: WORM_PROTECT_WRITE active on this vault.");
+                ret = -EPERM;
+            } else
+#endif
+            ret = rust_vault_repair(vpath);
+        } else if (cfg->op_diff) {
+            ret = rust_vault_diff(vpath, cfg->diff_other);
+        /*  Backup & Import  */
+        } else if (cfg->op_backup) {
+            ret = rust_vault_backup(vpath, cfg->backup_out);
+        } else if (cfg->op_restore) {
+            if (!cfg->restore_archive) { print_err("--restore-arch requires <archive.tar.gz>"); ret = 1; }
+            else {
+#ifdef __linux__
+                uint32_t wf = vault_worm_get_flags_ffi(id);
+                if (wf & WORM_PROTECT_WRITE) {
+                    print_err("[WORM] --restore-arch blocked: WORM_PROTECT_WRITE active.");
+                    ret = -EPERM;
+                } else
+#endif
+                ret = rust_vault_restore(vpath, cfg->restore_archive);
+            }
+        } else if (cfg->op_import) {
+            if (!cfg->import_src) { print_err("--import requires <source>"); ret = 1; }
+            else {
+#ifdef __linux__
+                uint32_t wf = vault_worm_get_flags_ffi(id);
+                if (wf & WORM_PROTECT_WRITE) {
+                    print_err("[WORM] --import blocked: WORM_PROTECT_WRITE active.");
+                    ret = -EPERM;
+                } else
+#endif
+                ret = rust_vault_import(vpath, cfg->import_src);
+            }
+        /*  Lock/Unlock  */
+        } else if (cfg->op_lock) {
+            ret = rust_vault_lock(vpath);
+        } else if (cfg->op_lock_status) {
+            ret = rust_vault_lock_status(vpath);
+        } else if (cfg->op_force_unlock) {
+            ret = rust_vault_force_unlock(vpath);
+        /*  Key Lifecycle  */
+        } else if (cfg->op_key_info) {
+            ret = rust_vault_key_info(vpath);
+        } else if (cfg->op_key_rotate) {
+            if (!cfg->key_rotate_old || !cfg->key_rotate_new) {
+                print_err("--key-rotate requires <old-pass> <new-pass>");
+                ret = 1;
+            } else {
+                ret = rust_vault_key_rotate(vpath, cfg->key_rotate_old, cfg->key_rotate_new);
+            }
+        } else if (cfg->op_rekey) {
+            const char *p = cfg->password;
+            if (!p || !p[0]) {
+                char *rp = read_password_silent("Current vault password: ");
+                strncpy(pass_buf, rp, sizeof(pass_buf)-1);
+                p = pass_buf;
+            }
+            ret = rust_vault_rekey(vpath, p);
+        /*  Observability  */
+        } else if (cfg->op_stats) {
+            ret = rust_vault_stats(vpath);
+        } else if (cfg->op_usage) {
+            ret = rust_vault_usage(vpath);
+        } else if (cfg->op_inspect) {
+            if (!cfg->inspect_target) { print_err("--inspect requires <file>"); ret = 1; }
+            else ret = rust_vault_inspect(vpath, cfg->inspect_target);
+        } else if (cfg->op_history) {
+            ret = rust_vault_history(vpath);
+        } else if (cfg->op_events) {
+            ret = rust_vault_events(vpath);
+        }
+        goto cleanup;
+
+    /*  MAC AppArmor (global, no vault-id needed)  */
+    if (cfg->op_mac_enable) {
+        g_catalog.mac_mode = 1;
+        catalog_save();
+        printf("AppArmor MAC protection enabled globally.\n");
+        cli_log(CLI_LOG_AUDIT, "MAC", "mac_mode set to 1 (enabled)");
+        goto cleanup;
+    }
+    if (cfg->op_disable_apparmor) {
+        char phrase[128];
+        fprintf(stderr, "Secret phrase required to disable AppArmor protection.\n");
+        fprintf(stderr, "Phrase: ");
+        fflush(stderr);
+
+        struct termios old_term, silent_term;
+        tcgetattr(STDIN_FILENO, &old_term);
+        silent_term = old_term;
+        silent_term.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL);
+        tcsetattr(STDIN_FILENO, TCSANOW, &silent_term);
+        if (!fgets(phrase, sizeof(phrase), stdin)) {
+            tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+            print_err("Failed to read phrase.");
+            ret = 1;
+            goto cleanup;
+        }
+        tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+        fprintf(stderr, "\n");
+        phrase[strcspn(phrase, "\n")] = '\0';
+
+        if (!rust_validate_mac_secret(phrase)) {
+            print_err("Invalid secret phrase. AppArmor remains active.");
+            cli_log(CLI_LOG_AUDIT, "MAC", "disable-apparmor rejected: invalid phrase");
+            ret = 1;
+            goto cleanup;
+        }
+
+        const char *target = cfg->app_armor_target;
+        if (!target || strcmp(target, "all") == 0) {
+            /* Disable for all vaults */
+            for (uint32_t vault_index = 0; vault_index < g_catalog.count; vault_index++) {
+                Vault *current_vault = &g_catalog.vaults[vault_index];
+                if (mac_apparmor_is_active(current_vault->id))
+                    mac_apparmor_remove(current_vault->id);
+            }
+            g_catalog.mac_mode = 0;
+            catalog_save();
+            print_ok("AppArmor disabled for all vaults.");
+            cli_log(CLI_LOG_AUDIT, "MAC", "disable-apparmor: all vaults cleared");
+        } else {
+            /* Disable for a specific vault by name or id */
+            bool vault_found = false;
+            for (uint32_t vault_index = 0; vault_index < g_catalog.count; vault_index++) {
+                Vault *current_vault = &g_catalog.vaults[vault_index];
+                char vault_id_str[32];
+                snprintf(vault_id_str, sizeof(vault_id_str), "vault-%u", current_vault->id);
+                if (strcmp(target, vault_id_str) == 0 ||
+                    strcmp(target, current_vault->name) == 0) {
+                    mac_apparmor_remove(current_vault->id);
+                    print_ok("AppArmor disabled for vault.");
+                    cli_log(CLI_LOG_AUDIT, "MAC", "disable-apparmor: vault cleared");
+                    vault_found = true;
+                    break;
+                }
+            }
+            if (!vault_found) {
+                print_err("Vault not found.");
+                ret = 1;
+            }
+        }
+        goto cleanup;
+    }
+    if (cfg->op_mac_status) {
+        const char *mode_str =
+            g_catalog.mac_mode == 1  ? "enabled" :
+            g_catalog.mac_mode == 0  ? "disabled" :
+                                       "not configured (first-run pending)";
+        printf("AppArmor MAC: %s\n", mode_str);
+        goto cleanup;
+    }
+    if (cfg->op_generate_secret) {
+        char secret_phrase[256];
+        if (rust_generate_mac_secret(secret_phrase, sizeof(secret_phrase)) != 0) {
+            print_err("Failed to generate secret phrase.");
+            ret = 1;
+            goto cleanup;
+        }
+        printf("\n");
+        printf("  AppArmor Recovery Secret\n");
+        printf("  \n");
+        printf("  %s\n", secret_phrase);
+        printf("  \n");
+        printf("\n");
+        printf("  Write this phrase down on paper and store it safely.\n");
+        printf("  It will NOT be shown again. The hash is saved at ~/.nuk4sd_mac_secret.\n");
+        printf("  Use --disable-apparmor to revoke protection with this phrase.\n");
+        printf("\n");
+        cli_log(CLI_LOG_AUDIT, "MAC", "generate-secret: new Argon2 secret generated");
+        goto cleanup;
+    }
+    if (cfg->op_app_armor) {
+        if (!mac_apparmor_available()) {
+            print_err("AppArmor not available on this kernel.");
+            ret = 1;
+            goto cleanup;
+        }
+        if (!cfg->app_armor_target) {
+            print_err("--app-armor requires an argument: 'all' or 'vault-<id>'");
+            ret = 1;
+            goto cleanup;
+        }
+        if (strcmp(cfg->app_armor_target, "all") == 0) {
+            int loaded = mac_apparmor_apply_all();
+            printf("%d vault profile(s) loaded.\n", loaded);
+        } else if (strncmp(cfg->app_armor_target, "vault-", 6) == 0) {
+            uint32_t target_vault_id = (uint32_t)atoi(cfg->app_armor_target + 6);
+            Vault *target_vault = NULL;
+            for (uint32_t vi = 0; vi < g_catalog.count; vi++) {
+                if (g_catalog.vaults[vi].id == target_vault_id) {
+                    target_vault = &g_catalog.vaults[vi];
+                    break;
+                }
+            }
+            if (!target_vault) {
+                print_err("Vault not found.");
+                ret = 1;
+                goto cleanup;
+            }
+            if (!target_vault->is_mounted) {
+                print_err("Vault must be mounted to apply AppArmor profile.");
+                ret = 1;
+                goto cleanup;
+            }
+            ret = (mac_apparmor_load(target_vault) == ERR_OK) ? 0 : 1;
+            if (ret == 0)
+                printf("AppArmor profile loaded for vault %u.\n", target_vault_id);
+        } else {
+            print_err("Invalid argument. Use 'all' or 'vault-<id>'.");
+            ret = 1;
+        }
+        goto cleanup;
+    }
 
     if (cfg->op_info)  { cli_log_operation_start("INFO",  id); vault_info_ffi(id);  goto cleanup; }
     if (cfg->op_files) { cli_log_operation_start("FILES", id); vault_files_ffi(id); goto cleanup; }
@@ -2309,7 +3215,7 @@ static int dispatch(CliConfig *cfg) {
         if (cfg->json_output)
             printf("{\"id\":%u,\"status\":\"%s\"}\n", id, label);
         else
-            printf("  Vault %u — \033[1m%s\033[0m\n", id, label);
+            printf("  Vault %u  \033[1m%s\033[0m\n", id, label);
         goto cleanup;
     }
 
@@ -2322,7 +3228,7 @@ static int dispatch(CliConfig *cfg) {
             printf("{\"id\":%u,\"issues\":%d,\"detail\":\"%s\"}\n",
                    id, issues, report);
         } else if (issues > 0) {
-            printf("\033[31m⚠ ALERT: %d file(s) modified since last scan:\033[0m\n%s",
+            printf("\033[31mš  ALERT: %d file(s) modified since last scan:\033[0m\n%s",
                    issues, report);
             printf("  Use --resolve to approve changes.\n");
         } else {
@@ -2458,11 +3364,11 @@ static int dispatch(CliConfig *cfg) {
         goto cleanup;
     }
 
-    /* ── WORM ──────────────────────────────────────────────────────────── */
+    /*  WORM  */
     if (cfg->op_worm_status) {
         uint32_t f = vault_worm_get_flags_ffi(id);
         cli_log_worm_status(id, f);
-        printf("\n  WORM — vault %u (raw flags 0x%02x)\n", id, f);
+        printf("\n  WORM  vault %u (raw flags 0x%02x)\n", id, f);
         printf("  %-16s %s\n", "delete:",
                f & WORM_PROTECT_DELETE ? "\033[31mBLOCKED\033[0m" : "allowed");
         printf("  %-16s %s\n", "rename:",
@@ -2473,13 +3379,13 @@ static int dispatch(CliConfig *cfg) {
                f & WORM_PROTECT_READ   ? "\033[31mBLOCKED\033[0m" : "allowed");
         printf("  %-16s %s\n\n", "protected-scan:",
                f & WORM_PROTECT_SCAN   ?
-               "\033[31mACTIVE (immutable — use --mount-export to rescue)\033[0m" :
+               "\033[31mACTIVE (immutable  use --mount-export to rescue)\033[0m" :
                "inactive");
         goto cleanup;
     }
 
     if (cfg->worm_protected_scan) {
-        printf("\033[31m⚠  PROTECTED-SCAN is IRREVERSIBLE.\033[0m\n");
+        printf("\033[31mš   PROTECTED-SCAN is IRREVERSIBLE.\033[0m\n");
         printf("   The vault will become completely immutable.\n");
         printf("   Only --mount-export can rescue files afterwards.\n");
         printf("   Type 'yes' to confirm: ");
@@ -2523,7 +3429,7 @@ static int dispatch(CliConfig *cfg) {
 
     if (cfg->worm_set || cfg->worm_clear) goto cleanup;
 
-    /* ── Container Whitelist ────────────────────────────────────────────── */
+    /*  Container Whitelist  */
     if (cfg->op_whitelist_exclude || cfg->op_whitelist_restore) {
         VaultContainer c;
         memset(&c, 0, sizeof(c));
@@ -2540,11 +3446,7 @@ static int dispatch(CliConfig *cfg) {
         goto cleanup;
     }
 
-    /* ── --image <alias|url> ────────────────────────────────────────────
-     * Pull & extract a rootfs image from GitHub before launching the sandbox.
-     * The image populates the container lowerdir that OverlayFS will stack.
-     * On failure the flag is treated as non-fatal — the sandbox still launches
-     * using the vault's own cipher_path as lowerdir (existing behaviour). */
+    /*  --image <alias|url>  */
     if (cfg->image_url) {
         char lowerdir[VAULT_PATH_MAX];
         snprintf(lowerdir, sizeof(lowerdir), "/tmp/nuk4sd-img-%u-XXXXXX", id);
@@ -2552,17 +3454,14 @@ static int dispatch(CliConfig *cfg) {
             perror("[IMAGE] mkdtemp lowerdir");
         } else {
             if (cfg->verbose)
-                printf("  → pulling image '%s' into %s...\n", cfg->image_url, lowerdir);
+                printf("  ’ pulling image '%s' into %s...\n", cfg->image_url, lowerdir);
             int pull_ret = rust_oci_pull_image(cfg->image_url, lowerdir);
             if (pull_ret != 0) {
-                print_warn("Image pull failed — falling back to vault root.");
+                print_warn("Image pull failed  falling back to vault root.");
                 rmdir(lowerdir);
             } else {
                 if (cfg->verbose)
-                    printf("  → image ready at %s\n", lowerdir);
-                /* Store the extracted lowerdir path so run_isolated() can use it
-                 * as the jail root instead of the FUSE vault path. */
-                /* FIX #5: registrar que image_url foi alocado via strdup */
+                    printf("  ’ image ready at %s\n", lowerdir);
                 cfg->no_fuse = true;
                 cfg->image_url = strdup(lowerdir);
                 cfg->image_url_allocated = true;
@@ -2570,22 +3469,16 @@ static int dispatch(CliConfig *cfg) {
         }
     }
 
-    /* ── --run <exec> ──────────────────────────────────────────────────── */
+    /*  --run <exec>  */
     if (cfg->run_exec) {
         char vault_path[VAULT_PATH_MAX];
 
         if (cfg->no_fuse) {
-            /* Se --image foi usado e a extração foi bem-sucedida, cfg->image_url
-             * agora aponta para o rootfs extraído. Usamos ele diretamente como
-             * jail root — sem criar um tmpdir vazio separado.
-             * Caso contrário (--no-fuse sem --image): cria tmpdir vazio. */
             if (cfg->image_url) {
-                /* rootfs OCI já extraído — usa diretamente */
                 snprintf(vault_path, sizeof(vault_path), "%s", cfg->image_url);
                 if (cfg->verbose)
-                    printf("  → using OCI rootfs at '%s'\n", vault_path);
+                    printf("  ’ using OCI rootfs at '%s'\n", vault_path);
             } else {
-                /* --no-fuse puro: tmpdir vazio como jail root */
                 snprintf(vault_path, sizeof(vault_path), "/tmp/Nuk4sd-nofuse-XXXXXX");
                 if (mkdtemp(vault_path) == NULL) {
                     perror("[RUN] --no-fuse: mkdtemp jail root");
@@ -2593,7 +3486,7 @@ static int dispatch(CliConfig *cfg) {
                     goto cleanup;
                 }
                 if (cfg->verbose)
-                    printf("  --no-fuse: usando jail root em '%s' (sem FUSE)\n", vault_path);
+                    printf("  --no-fuse: using jail root at '%s' (without FUSE)\n", vault_path);
             }
         } else {
             if (vault_get_real_path_ffi(id, vault_path, sizeof(vault_path)) != 0) {
@@ -2602,18 +3495,17 @@ static int dispatch(CliConfig *cfg) {
                 goto cleanup;
             }
 
-            /* Monta o vault via FUSE antes de isolar (será visível dentro) */
             if (cfg->verbose)
-                printf("  → mounting vault %u via FUSE...\n", id);
+                printf("  ’ mounting vault %u via FUSE...\n", id);
             vault_mount_ffi(id, pass ? pass : "");
         }
 
         if (cfg->verbose) {
-            printf("  → exec: %s", cfg->run_exec);
+            printf("  ’ exec: %s", cfg->run_exec);
             for (int i = 0; i < cfg->run_argc; i++)
                 printf(" %s", cfg->run_argv[i]);
             printf("\n");
-            printf("  → net=%s  wayland=%d  x11=%d  ro-home=%d  "
+            printf("  ’ net=%s  wayland=%d  x11=%d  ro-home=%d  "
                    "no-dbus=%d  tmp-home=%d  no-proc=%d  no-fuse=%d\n",
                    cfg->iso_no_net ? "isolated" : "host",
                    cfg->iso_wayland, cfg->iso_x11, cfg->iso_ro_home,
@@ -2625,38 +3517,32 @@ static int dispatch(CliConfig *cfg) {
 
         if (cfg->no_fuse) {
             if (cfg->image_url) {
-                /* FIX #1: substituiu system("rm -rf") por nftw() — sem injeção de shell,
-                 * FTW_PHYS impede seguir symlinks durante a limpeza do rootfs OCI. */
                 if (cfg->verbose)
-                    printf("  → cleaning OCI rootfs at '%s'...\n", vault_path);
+                    printf("  ’ cleaning OCI rootfs at '%s'...\n", vault_path);
 #ifdef __linux__
                 if (rm_rf_safe(vault_path) != 0)
-                    fprintf(stderr, "[RUN] rm_rf_safe('%s') falhou: %s\n",
+                    fprintf(stderr, "[RUN] rm_rf_safe('%s') failed: %s\n",
                             vault_path, strerror(errno));
 #else
-                rmdir(vault_path); /* stub Windows */
+                rmdir(vault_path);
 #endif
-                /* FIX #5: liberar image_url apenas se foi alocado dinamicamente */
                 if (cfg->image_url_allocated) {
                     free(cfg->image_url);
                     cfg->image_url = NULL;
                     cfg->image_url_allocated = false;
                 }
             } else {
-                /* --no-fuse puro: diretório vazio criado por mkdtemp */
                 rmdir(vault_path);
             }
         } else {
-            /* Desmonta o vault FUSE após o programa isolado encerrar */
             if (cfg->verbose)
-                printf("  → unmounting vault %u (run finished)...\n", id);
+                printf("  ’ unmounting vault %u (run finished)...\n", id);
             vault_unmount_ffi(id);
         }
 
         goto cleanup;
     }
 
-    /* Nenhuma operação reconhecida */
     print_err("No operation specified. Use --help for usage.");
     ret = 1;
 
@@ -2666,38 +3552,52 @@ cleanup:
 }
 
 /*
- *  Entry point FFI — chamado pelo main.rs
+ *  FFI Entry point  called by main.rs
  * */
+static int8_t cli_mac_first_run_prompt(void) {
+    fprintf(stderr, "Enable AppArmor MAC protection for vaults? [y/N]: ");
+    fflush(stderr);
+
+    char user_response = 0;
+    if (read(STDIN_FILENO, &user_response, 1) == 1
+        && (user_response == 'y' || user_response == 'Y')) {
+        return 1;
+    }
+    return 0;
+}
+
 int vault_cli_parse_and_exec(int argc, char **argv) {
-    /* CliConfig tem ~260 KB (binds[64][4096]) — alocada na stack estouraria
-     * o limite padrão (8 MB) quando combinada com os frames do Rust runtime
-     * e das funções aninhadas (preflight_scan, run_isolated).
-     * calloc() aloca no heap e garante zero-init (equivale a memset 0). */
     CliConfig *cfg = calloc(1, sizeof(*cfg));
     if (!cfg) {
         fprintf(stderr, "[FATAL] calloc CliConfig: out of memory\n");
         return 1;
     }
 
-    /* Inicializa logger (path=NULL → usa ~/.local/share/Nuk4sd/cli.log) */
     cli_log_init(NULL);
 
+    /* First-run: ask user once whether to enable AppArmor MAC globally.
+     * g_catalog.mac_mode is populated by vault_ffi_init -> catalog_load
+     * before this function is called. -1 means never configured. */
+    if (g_catalog.mac_mode == -1) {
+        g_catalog.mac_mode = cli_mac_first_run_prompt();
+        catalog_save();
+        cli_log(CLI_LOG_AUDIT, "MAC",
+                "First-run: user set mac_mode=%d", g_catalog.mac_mode);
+    }
+
     if (parse_flags(argc, argv, cfg) != 0) {
-        cli_log(CLI_LOG_ERROR, "COMMAND", "parse_flags falhou — args inválidos");
+        cli_log(CLI_LOG_ERROR, "COMMAND", "parse_flags failed  invalid args");
         cli_log_close();
         free(cfg);
         return 1;
     }
 
-    /* Activa verbose no logger se --verbose foi passado */
     cli_log_set_verbose(cfg->verbose);
-
-    /* Loga o comando recebido (sem expor --password) */
     cli_log_command(argc, argv, cfg->vault_id);
 
     int ret = dispatch(cfg);
 
-    cli_log(CLI_LOG_INFO, "COMMAND", "encerrado ret=%d", ret);
+    cli_log(CLI_LOG_INFO, "COMMAND", "ended ret=%d", ret);
     cli_log_close();
     free(cfg);
     return ret;
@@ -2705,31 +3605,7 @@ int vault_cli_parse_and_exec(int argc, char **argv) {
 
 /*
  *  vault_sandbox_run_ffi()
- *
- *  Lança um executável isolado no sandbox de um vault preenchendo o
- *  CliConfig DIRETO a partir de parâmetros tipados — sem montar string de
- *  linha de comando, sem join(" ")/split_whitespace() e sem passar por
- *  parse_flags()/getopt_long().
- *
- *  Motivo de existir: a GUI (Rust/egui) montava antes uma string tipo
- *  "--vault 3 --run <exe> --wayland --rw <path>" e mandava pro parser de
- *  texto via vault_cli_parse_and_exec(). Isso quebra silenciosamente sempre
- *  que <exe> ou <path> contém espaço (nome de pasta comum tipo
- *  "Meus Documentos"), porque getopt_long() exige que cada valor seja um
- *  argv[] próprio — um re-split por espaço não preserva isso.
- *
- *  Aqui os valores chegam via FFI já como campos separados (ponteiros C
- *  distintos), então nunca existe re-tokenização nenhuma: um path com
- *  espaço, acento ou qualquer caractere chega intacto.
- *
- *  Reaproveita 100% do mesmo caminho de execução (dispatch(), preflight_scan(),
- *  bind mounts, seccomp, jail, etc.) que vault_cli_parse_and_exec() usa —
- *  só a origem dos dados em CliConfig muda.
- *
- *  ro_paths/rw_paths/blacklist_paths podem ser NULL com count=0 quando não
- *  usados. Cada array é uma lista de ponteiros C string (sem separador
- *  nenhum dentro de cada elemento — o problema original nunca volta).
- * ───────────────────────────────────────────────────────────────────────── */
+ * */
 static void bind_add_ffi(CliConfig *cfg, const char *path, BindType type) {
     if (!path || !*path || cfg->bind_count >= MAX_BINDS) return;
     cli_expand_tilde(path, cfg->binds[cfg->bind_count].path, PRESET_PATH_MAX);
@@ -2763,7 +3639,7 @@ int vault_sandbox_run_ffi(
     cfg->rule_hour_from = -1;
     cfg->rule_hour_to   = -1;
 
-    cfg->run_exec = (char *)exec_path;  /* dispatch()/preflight_scan() só leem */
+    cfg->run_exec = (char *)exec_path;
     cfg->password = (char *)password;
 
     cfg->iso_no_net     = no_net;
@@ -2788,7 +3664,7 @@ int vault_sandbox_run_ffi(
 
     int ret = dispatch(cfg);
 
-    cli_log(CLI_LOG_INFO, "COMMAND", "encerrado ret=%d", ret);
+    cli_log(CLI_LOG_INFO, "COMMAND", "ended ret=%d", ret);
     cli_log_close();
     free(cfg);
     return ret;

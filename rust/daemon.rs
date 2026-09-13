@@ -1,9 +1,9 @@
-//! Daemon local do Nuk4sd.
+//! Local daemon for Nuk4sd.
 //!
-//! O daemon expõe somente operações explicitamente allowlisted sobre um socket
-//! Unix privado. Ele não recebe shell, caminhos ou argv do cliente. As respostas
-//! de vaults vêm diretamente da FFI real; quando o core não está disponível, a
-//! conexão falha fechada.
+//! The daemon exposes only explicitly allowlisted operations over a private
+//! Unix socket. It does not receive shell, paths, or argv from the client. Vault
+//! responses originate directly from real FFI; when the core is unavailable, the
+//! connection fails closed.
 
 use crate::ffi;
 use serde::{Deserialize, Serialize};

@@ -70,8 +70,8 @@ int vault_ffi_init(void) {
     /* Init monitor context */
     g_monitor.catalog     = &g_catalog;
     g_monitor.running     = true;
-    g_monitor.quiet_mode   = true; /* Ativar modo silencioso por padrão conforme solicitado */
-    /* fanotify_init configurado apenas para notificações, sem FAN_REPORT_FID que exige CAP_SYS_ADMIN */
+    g_monitor.quiet_mode   = true; /* Enable quiet mode by default as requested */
+    /* fanotify_init configured only for notifications, without FAN_REPORT_FID which requires CAP_SYS_ADMIN */
     g_monitor.fanoti_fd = fanotify_init(
         FAN_CLASS_PRE_CONTENT | FAN_CLOEXEC | FAN_NONBLOCK,
         O_RDONLY | O_LARGEFILE
@@ -636,7 +636,7 @@ int vault_sandbox_ffi(uint32_t id, const char *password, int gui_mode, const cha
 }
 
 
-/* Isola caminho arbitrário via bind-mount readonly (ver vault_sandbox.c) */
+/* Isolate arbitrary path via readonly bind-mount */
 extern int vault_isolate_path_readonly(const char *path);
 
 int vault_isolate_path_ffi(const char *path) {

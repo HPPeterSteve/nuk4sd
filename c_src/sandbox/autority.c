@@ -1,18 +1,15 @@
 #include "sandbox.h"
-#include <uuid/uuid.h>
-/*
- * codigo fonte responsável pela flag de --uuid
- * pai cria um processo supervisor para o sandbox e cria processo filho
- * espera o binario criar o sandbox e pega uuid
- * pega o uuid do sandbox, pegando o caminho daquele binario
- * filho aguarda o pai ler o /proc/[pid]/exe e verificar se é o binario original
- * filho prepara um novo nome para o processo
- * se sim, monitorar uuid fornecido ja pelas structs
- * se nao, ele para de monitorar e deixa o processo vivo. isso não é trabalho do --uuid
- * cria um nome hasheado daquele processo
- * verifica a cada momento se o processo deu exit code, se sim, ele encerra também
- */
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #ifdef __linux__
+#include <uuid/uuid.h>
+#include <sys/prctl.h>
+#endif
+
 
 static int hash_string(const char *str) {
     unsigned int hash = 5381;
@@ -28,7 +25,7 @@ int setup_uuid(UuidArgs args) {
     char uuid_str[37];
     int exitcode = 0;
 
-    /* gera uuid para sandboxes */
+    /* generate uuid for sandboxes */
     uuid_generate(uuid);
     if (uuid_is_null(uuid)) {
         vault_log(LOG_ERROR, "[uuid] Failed to generate uuid for sandbox %s",
@@ -36,11 +33,10 @@ int setup_uuid(UuidArgs args) {
         return -1;
     }
 
-    /* aqui o filho deve verificar se o uuid é nulo, se sim, ele para de
-     * monitorar e deixa o processo vivo. */
+    /* child process checks if uuid is null; if so, stops monitoring and keeps process alive */
     uuid_unparse(uuid, uuid_str);
 
-    /* envia uuid para o filho via pipe, se configurado */
+    /* send uuid to child via pipe if configured */
     if (args.pipe_fd[1] >= 0) {
         if (write(args.pipe_fd[1], uuid_str, sizeof(uuid_str)) < 0) {
             vault_log(LOG_ERROR, "[uuid] Failed to write to pipe: %s", strerror(errno));
@@ -48,7 +44,7 @@ int setup_uuid(UuidArgs args) {
         }
     }
 
-    /* prepara um novo nome para o processo */
+    /* prepare new process name */
     char hash_str[16];
     int hash = hash_string(uuid_str);
 
@@ -64,7 +60,7 @@ int setup_uuid(UuidArgs args) {
 
     vault_log(LOG_INFO, "[uuid] Process %d with uuid %s configured successfully", (int)args.pid, uuid_str);
 
-    /* limpa dados sensíveis da stack */
+    /* clear sensitive stack data */
     explicit_bzero(uuid_str, sizeof(uuid_str));
     vault_log(LOG_INFO, "[uuid] Explicitly clearing uuid_str");
 
@@ -87,17 +83,17 @@ int wait_init_binary(UuidArgs args) {
 
     ssize_t nread = readlink(exe_path, readed_path, sizeof(readed_path) - 1);
 
-    /* aqui o supervisor lê o caminho absoluto do executavel que o processo está executando */
+    /* supervisor reads absolute path of executable running in process */
 
     if (nread < 0) {
         vault_log(LOG_ERROR, "[uuid] Failed to read executable path: %s", strerror(errno));
         return -1;
     }
 
-    /* garante o null terminator */
+    /* ensure null terminator */
     readed_path[nread] = '\0';
 
-    /* verifica se o caminho absoluto do executavel é igual ao original */
+    /* verify if executable absolute path matches original path */
     if (args.original_binary && strcmp(args.original_binary, readed_path) != 0) {
         vault_log(LOG_ERROR, "[uuid] Binary path does not match the original path: %s (expected: %s)", readed_path,
                   args.original_binary);

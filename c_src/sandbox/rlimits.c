@@ -2,7 +2,7 @@
  * rlimits.c
  *
  * Nuk4sd — Hardened Sandbox — Resource Limits (DoS prevention)
- * Extraído de vault_sandbox.c 
+ * Extracted from vault_sandbox.c 
  */
 
 #include "sandbox.h"
@@ -31,7 +31,7 @@ static void sandbox_limit_resources(bool is_gui)
     setrlimit(RLIMIT_NOFILE, &rl);
 }
 
-/* Wrapper público — chamado por jail.c (vault_prepare_jail) */
+/* Public wrapper — called by jail.c (vault_prepare_jail) */
 void vsb_limit_resources(bool is_gui) { sandbox_limit_resources(is_gui); }
 
 #endif /* __linux__ */

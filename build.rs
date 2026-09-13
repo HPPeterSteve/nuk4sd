@@ -1,6 +1,12 @@
 use std::{env, process::Command as C};
 
 fn main() {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "linux" {
+        println!("cargo:warning=Non-Linux target ({}); skipping C core compilation.", target_os);
+        return;
+    }
+
     let o = env::var("OUT_DIR").unwrap();
 
     // Resolve include paths via pkg-config when available
@@ -41,7 +47,10 @@ fn main() {
         "c_src/sandbox/rlimits.c",
         "c_src/sandbox/seccomp.c",
         "c_src/sandbox/jail.c",
-        "c_src/sandbox/common.c",
+        "c_src/sandbox/mount_dev.c",
+        "c_src/sandbox/net.c",
+        "c_src/sandbox/autority.c",
+        "c_src/sandbox/apparmor.c",
     ];
 
     /* ── CLI interface ──────────────────────────────────────────────────────
@@ -60,11 +69,18 @@ fn main() {
         "c_src/container/container.c",
     ];
 
+    /* ── Experimental subsystem ─────────────────────────────────────────────
+     * common.c: Mini-Init Supervisor PID 1 (--init). */
+    let experimental = [
+        "c_src/experimental/common.c",
+    ];
+
     // Todos os sources num único iterador para o loop de compilação
     let all_sources: Vec<&str> = vault.iter()
         .chain(sandbox.iter())
         .chain(cli.iter())
         .chain(container.iter())
+        .chain(experimental.iter())
         .copied()
         .collect();
 
@@ -102,6 +118,7 @@ fn main() {
             "-I", "c_src/sandbox",
             "-I", "c_src/cli",
             "-I", "c_src/container",
+            "-I", "c_src/experimental",
             i,
             "-o",
             &p,
@@ -143,6 +160,8 @@ fn main() {
     println!("cargo:rustc-link-lib=seccomp");
     println!("cargo:rustc-link-lib=cap");
     println!("cargo:rustc-link-lib=fuse3");
+    println!("cargo:rustc-link-lib=nftables");
+    println!("cargo:rustc-link-lib=uuid");
 
     /* ── rerun-if-changed ───────────────────────────────────────────────────
      * Cargo só reexecuta build.rs quando um path EXPLICITAMENTE listado muda.
@@ -174,4 +193,7 @@ fn main() {
     // Headers do container
     println!("cargo:rerun-if-changed=c_src/container/overlay.h");
     println!("cargo:rerun-if-changed=c_src/container/container.h");
+
+    // Headers experimentais
+    println!("cargo:rerun-if-changed=c_src/experimental/common.h");
 }

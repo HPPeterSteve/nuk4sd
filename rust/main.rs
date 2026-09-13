@@ -1,16 +1,16 @@
 /*
  * main.rs
  *
- * Nuk4sd — entry point minimalista
+ * Nuk4sd — minimal entry point
  *
- * Delega todo o parsing de flags e execução ao core C (vault_cli.c).
- * O Rust é responsável apenas por:
- *   1. Inicializar o core C (vault_ffi_init)
- *   2. Passar argc/argv para vault_cli_parse_and_exec
- *   3. Chamar vault_ffi_shutdown na saída
- *   4. Expor callbacks C→Rust (rust_vault_copy_file, etc.)
+ * Delegates all flag parsing and execution to the C core (vault_cli.c).
+ * Rust is responsible only for:
+ *   1. Initializing the C core (vault_ffi_init)
+ *   2. Passing argc/argv to vault_cli_parse_and_exec
+ *   3. Calling vault_ffi_shutdown on exit
+ *   4. Exposing C->Rust callbacks (rust_vault_copy_file, etc.)
  *
- * Modo interativo (sem argumentos): abre o REPL via repl.rs
+ * Interactive mode (no arguments): opens REPL via repl.rs
  */
 
 mod crypto;
@@ -21,48 +21,47 @@ mod path_assistant;
 mod preset;
 mod repl;
 mod sys_info;
-#[cfg(target_os = "linux")]
 pub mod oci;
+pub mod vault_ops;
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 
 /* ─────────────────────────────────────────────────────────────────────────
- *  FFI — entry point do core C
- * ───────────── */
+ *  FFI — C core entry point
+ * ───────────────────────────────────────────────────────────────────────── */
 extern "C" {
     fn vault_ffi_init() -> c_int;
     fn vault_ffi_shutdown() -> c_int;
     fn vault_cli_parse_and_exec(argc: c_int, argv: *const *const c_char) -> c_int;
 }
 
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_cli = args.len() > 1;
 
-    // [MODO PORTABLE CONTAINER]
-    // Se o executável estiver rodando ao lado de um .vault_container_meta, ele ignora
-    // a inicialização padrão (REPL/CLI) e entra direto no modo Sandbox/Container isolado.
+    // [PORTABLE CONTAINER MODE]
+    // If executable is running alongside a .vault_container_meta file, it bypasses
+    // standard initialization (REPL/CLI) and enters isolated Sandbox/Container mode directly.
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let meta_path = exe_dir.join(".vault_container_meta");
             if meta_path.exists() {
-                println!("[Nuk4sd] Detectado modo Vault-Container (auto-execução). Lendo {}...", meta_path.display());
-                // No futuro ler o JSON/struct aqui e chamar ffi::run_sandbox
-                println!("[Nuk4sd] TODO: Iniciar container via ffi::run_sandbox usando os metadados do pacote.");
+                println!("[Nuk4sd] Vault-Container mode detected (auto-exec). Reading {}...", meta_path.display());
+                // Future: read JSON/struct here and call ffi::run_sandbox
+                println!("[Nuk4sd] TODO: Start container via ffi::run_sandbox using package metadata.");
                 std::process::exit(0);
             }
         }
     }
-
-
 
     /* --help and --version must never touch catalog.dat.
      * Detect them early and delegate directly to the CLI without init. */
     let is_info_only = args.len() == 2 &&
         (args[1] == "--help" || args[1] == "-h" || args[1] == "--version");
 
-    /* Inicializa core C (loads catalog, starts monitor thread, etc.)
+    /* Initialize C core (loads catalog, starts monitor thread, etc.)
      * Skipped for pure read-only informational flags. */
     if !is_info_only {
         let init_result = unsafe { vault_ffi_init() };
@@ -82,7 +81,7 @@ fn main() {
     .expect("Error setting Ctrl+C handler");
 
     let exit_code = if is_cli {
-        /* ── Modo CLI: passa argv direto ao core C ───────────────────── */
+        /* ── CLI Mode: pass argv directly to C core ───────────────────── */
         let c_args: Vec<CString> = args
             .iter()
             .map(|s| CString::new(s.as_str()).unwrap_or_default())
@@ -94,7 +93,7 @@ fn main() {
             vault_cli_parse_and_exec(c_ptrs.len() as c_int, c_ptrs.as_ptr())
         }
     } else {
-        /* ── Modo interativo: REPL ───────────────────────────────────── */
+        /* ── Interactive Mode: REPL ───────────────────────────────────── */
         repl::run();
         0
     };

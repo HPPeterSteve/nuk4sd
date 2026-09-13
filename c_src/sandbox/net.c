@@ -1,9 +1,9 @@
 /*
  * net.c
  *
- * Nuk4sd — Layer de Rede Isolada (--net veth)
+ * Nuk4sd — Isolated Network Layer (--net veth)
  *
- * Implementa rede isolada via par veth + NAT masquerade:
+ * Implements an isolated network via a veth pair + NAT masquerade:
  *
  *   HOST netns                          JAIL netns (CLONE_NEWNET)
  *   ---                ---
@@ -13,14 +13,14 @@
  *   ---                ---
  *            |
  *            ▼
- *     iptables NAT masquerade -> internet do host
+ *     iptables NAT masquerade -> host internet
  *
- * Fluxo:
- *   1. PAI (CAP_NET_ADMIN): cria par veth, configura veth0, habilita IP forward,
- *      adiciona regra NAT, move veth1 pro netns do filho.
- *   2. FILHO (dentro do namespace): ativa veth1, configura IP, adiciona rota default.
+ * Flow:
+ *   1. PARENT (CAP_NET_ADMIN): creates veth pair, configures veth0, enables IP forwarding,
+ *      adds NAT rule, moves veth1 to the child's netns.
+ *   2. CHILD (inside namespace): activates veth1, configures IP, adds default route.
  *
- * Dependências externas: iproute2 (binário `ip`), iptables, libnftnl.
+ * External dependencies: iproute2 (`ip` binary), iptables, libnftnl.
  *
  * Author: Peter Steve
  */
@@ -31,8 +31,6 @@
 
 #include "sandbox.h"
 #include <errno.h>
-#include <nftables/libnftables.h>
-#include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -40,11 +38,15 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Limite de 64 chars pra nomes de interface no kernel */
+#ifdef __linux__
+#include <nftables/libnftables.h>
+#include <sched.h>
+
+/* 64 char limit for interface names in kernel */
 #define NET_IFACE_NAME_MAX 64
 #define IP_MAX_LEN 64
 
-/* ── nfilter: lista de IPs permitidos ─────────────────────────────────────── */
+/* ── nfilter: allowed IPs list ───────────────────────────────────────────── */
 #define MAX_ALLOWED_IPS 64
 
 struct nfilter {
@@ -68,22 +70,65 @@ static void net_exec(const char *fmt, ...) {
     }
 }
 
-/* -- Chamado pelo PAI (antes do unshare do filho) ---
- * Cria o par veth no netns do HOST, configura o lado do gateway, habilita
- * IP forwarding e NAT. O lado do jail (veth1) é movido pro netns do filho
+/* ── Validates name_prefix for use in system() calls ───────────────────
+ * Allowed charset: [a-zA-Z0-9._-], max length: 15 chars
+ * (IFNAMSIZ - 1 in kernel: interfaces like nuk4sd-veth0 have 12 chars).
+ * Rejects any input that could inject shell commands.
+ *
+ * Returns 0 if valid, -1 if invalid. */
+static int validate_name_prefix(const char *p) {
+    if (!p || *p == '\0') {
+        vault_log(LOG_ERROR, "[NET] empty or NULL name_prefix");
+        return -1;
+    }
+    size_t len = 0;
+    for (const char *c = p; *c; c++, len++) {
+        if (!isalnum((unsigned char)*c) && *c != '.' && *c != '_' && *c != '-') {
+            vault_log(LOG_ERROR,
+                      "[NET] name_prefix '%s' contains invalid character '%c' (only [a-zA-Z0-9._-])",
+                      p, *c);
+            return -1;
+        }
+    }
+    /* Kernel IFNAMSIZ = 16 (includes NUL); real name = prefix + '0'/'1' = len+1 */
+    if (len == 0 || len > 14) {
+        vault_log(LOG_ERROR,
+                  "[NET] name_prefix '%s' with invalid length %zu (max 14)",
+                  p, len);
+        return -1;
+    }
+    return 0;
+}
+
+/* -- Called by PARENT (before child unshare) ---
+ * Creates veth pair in HOST netns, configures gateway side, enables
+ * IP forwarding and NAT. The jail side (veth1) is moved to child netns
  * via /proc/<child_pid>/ns/net.
  *
- * Retorno: 0 = ok, -1 = erro (não-fatal — jail continua sem rede) */
+ * Return: 0 = ok, -1 = error (non-fatal — jail continues without network) */
 int vsb_setup_veth_host(pid_t child_pid, const char *jail_ip, const char *gw_ip, const char *name_prefix) {
+    if (!jail_ip || !gw_ip || !name_prefix)
+        return -1;
+
+    /* Validate name_prefix before any interpolation in system() */
+    if (validate_name_prefix(name_prefix) != 0)
+        return -1;
+
+    struct in_addr a1, a2;
+    if (inet_pton(AF_INET, jail_ip, &a1) != 1 || inet_pton(AF_INET, gw_ip, &a2) != 1) {
+        vault_log(LOG_ERROR, "[NET] Invalid IP in veth setup: jail=%s, gw=%s", jail_ip, gw_ip);
+        return -1;
+    }
+
     char if0[NET_IFACE_NAME_MAX], if1[NET_IFACE_NAME_MAX];
 
     snprintf(if0, sizeof(if0), "%s0", name_prefix);
     snprintf(if1, sizeof(if1), "%s1", name_prefix);
 
-    /* Remove par veth anterior se existir — idempotência via ip link del. */
+    /* Remove previous veth pair if exists — idempotency via ip link del. */
     net_exec("ip link del %s0 2>/dev/null", name_prefix);
 
-    /* Cria par veth: saída rc verificada abaixo. */
+    /* Create veth pair: rc verified below. */
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "ip link add %s type veth peer name %s", if0, if1);
     if (system(cmd) != 0) {
@@ -91,22 +136,22 @@ int vsb_setup_veth_host(pid_t child_pid, const char *jail_ip, const char *gw_ip,
         return -1;
     }
 
-    /* Configura interface do gateway (lado host). */
+    /* Configure gateway interface (host side). */
     net_exec("ip link set %s up", if0);
     snprintf(cmd, sizeof(cmd), "ip addr add %s/24 dev %s", gw_ip, if0);
     system(cmd);
 
-    /* Move veth1 para o network namespace do filho. */
+    /* Move veth1 to child network namespace. */
     snprintf(cmd, sizeof(cmd), "ip link set %s netns %d", if1, (int)child_pid);
     if (system(cmd) != 0) {
         vault_log(LOG_ERROR, "[NET] Failed to move %s to pid %d netns: %s", if1, (int)child_pid, strerror(errno));
         return -1;
     }
 
-    /* Habilita IP forwarding via /proc/sys/net/ipv4/ip_forward. */
+    /* Enable IP forwarding via /proc/sys/net/ipv4/ip_forward. */
     net_exec("sysctl -w net.ipv4.ip_forward=1");
 
-    /* Adiciona regra NAT masquerade via iptables — rc verificado. */
+    /* Add NAT masquerade rule via iptables — rc verified. */
     snprintf(cmd, sizeof(cmd),
              "iptables -t nat -C POSTROUTING -s %s/24 ! -o %s0 -j MASQUERADE 2>/dev/null || "
              "iptables -t nat -A POSTROUTING -s %s/24 ! -o %s0 -j MASQUERADE",
@@ -117,19 +162,22 @@ int vsb_setup_veth_host(pid_t child_pid, const char *jail_ip, const char *gw_ip,
     return 0;
 }
 
-/* -- Chamado pelo FILHO (dentro do namespace, após unshare CLONE_NEWNET) ---
- * Ativa a interface veth1, configura IP e adiciona rota default via gateway.
+/* -- Called by CHILD (inside namespace, after unshare CLONE_NEWNET) ---
+ * Activates veth1 interface, configures IP, and adds default route via gateway.
  *
- * Retorno: 0 = ok, -1 = erro */
+ * Return: 0 = ok, -1 = error */
 
 int vsb_configure_veth_inside(const char *jail_ip, const char *gw_ip, const char *name_prefix) {
+    if (validate_name_prefix(name_prefix) != 0)
+        return -1;
+
     char if1[NET_IFACE_NAME_MAX];
     snprintf(if1, sizeof(if1), "%s1", name_prefix);
 
-    /* Ativar interface */
+    /* Activate interface */
     net_exec("ip link set %s up", if1);
 
-    /* Configurar IP */
+    /* Configure IP */
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "ip addr add %s/24 dev %s", jail_ip, if1);
     if (system(cmd) != 0) {
@@ -137,7 +185,7 @@ int vsb_configure_veth_inside(const char *jail_ip, const char *gw_ip, const char
         return -1;
     }
 
-    /* Rota default via gateway */
+    /* Default route via gateway */
     snprintf(cmd, sizeof(cmd), "ip route add default via %s dev %s", gw_ip, if1);
     if (system(cmd) != 0) {
         vault_log(LOG_ERROR, "[NET] Failed to add default route via %s", gw_ip);
@@ -151,16 +199,27 @@ int vsb_configure_veth_inside(const char *jail_ip, const char *gw_ip, const char
     return 0;
 }
 
-/* -- Chamado pelo PAI (antes do unshare do filho) ---
- * Registra um IP na whitelist interna do nfilter.
+#include <arpa/inet.h>
+
+/* -- Called by PARENT (before child unshare) ---
+ * Registers an IP in nfilter's internal whitelist.
  *
- * Retorno: 0 = ok, -1 = lista cheia */
+ * Return: 0 = ok, -1 = full list or invalid IP */
 int user_send_set_ip(const char *set_name, const char *ip) {
+    if (!ip)
+        return -1;
+
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip, &addr) != 1) {
+        vault_log(LOG_ERROR, "[nfilter] Invalid IPv4 address: '%s'", ip);
+        return -1;
+    }
+
     if (nf.count >= MAX_ALLOWED_IPS) {
         vault_log(LOG_ERROR, "[nfilter] Maximum number of allowed IPs reached");
         return -1;
     }
-    // copiando o ip para o array
+    // copying ip to array
     strncpy(nf.allowed_ips[nf.count], ip, IP_MAX_LEN - 1);
     nf.allowed_ips[nf.count][IP_MAX_LEN - 1] = '\0';
     nf.count++;
@@ -169,13 +228,22 @@ int user_send_set_ip(const char *set_name, const char *ip) {
 
     return 0;
 }
-/* Codigo revisado por Peter Steve
-Manteiner Nuk4sd Project: Peter Steve
-primeira leva de revisão: 02/09/2026 18:11 - 22:14  */
 
-/* libnftables — aplica a tabela, chain e regras de filtro de saída para o jail */
+/* Code reviewed by Peter Steve
+Maintainer Nuk4sd Project: Peter Steve
+First round of review: 09/02/2026 18:11 - 22:14  */
+
+/* libnftables — applies table, chain, and egress filter rules for the jail */
 int nfilterflag(const char *jail_name, const char *jail_ip) {
     (void)jail_ip;
+
+    /* Validate jail_name length before any snprintf —
+     * a huge name would truncate the buffer silently. */
+    if (!jail_name || strlen(jail_name) == 0 || strlen(jail_name) > 64) {
+        vault_log(LOG_ERROR,
+                  "[NET][ERROR] nfilterflag: invalid or too long jail_name (max 64 chars)");
+        return -1;
+    }
 
     struct nft_ctx *nft_context = nft_ctx_new(NFT_CTX_DEFAULT);
     if (nft_context == NULL) {
@@ -184,13 +252,30 @@ int nfilterflag(const char *jail_name, const char *jail_ip) {
     }
 
     char nft_commands_buffer[4096];
+
+    /* Check buffer capacity for worst case BEFORE first snprintf:
+     * header (table + chain) + nf.count IP rules (~128 bytes each). */
+    size_t worst_case = 256 + (nf.count * 128); /* generous margin */
+    if (worst_case >= sizeof(nft_commands_buffer)) {
+        vault_log(LOG_ERROR,
+                  "[NET][ERROR] Insufficient nftables rules buffer for %zu IPs — aborting",
+                  nf.count);
+        nft_ctx_free(nft_context);
+        return -1;
+    }
+
     int buffer_length = snprintf(nft_commands_buffer, sizeof(nft_commands_buffer),
                                  "add table ip %s\n"
                                  "add chain ip %s output { type filter hook output priority 0; policy drop; }\n",
                                  jail_name, jail_name);
 
-    /* Adiciona regra liberando trafego para os IPs cadastrados na whitelist */
-    for (size_t ip_index = 0; ip_index < nf.count && buffer_length < (int)sizeof(nft_commands_buffer); ip_index++) {
+    /* Add rule allowing traffic to whitelisted IPs */
+    for (size_t ip_index = 0; ip_index < nf.count; ip_index++) {
+        if (buffer_length >= (int)sizeof(nft_commands_buffer) - 128) {
+            vault_log(LOG_ERROR, "[NET] nftables rules buffer overflow — aborting to prevent truncated rules");
+            nft_ctx_free(nft_context);
+            return -1;
+        }
         buffer_length += snprintf(nft_commands_buffer + buffer_length, sizeof(nft_commands_buffer) - buffer_length,
                                   "add rule ip %s output ip daddr %s accept\n", jail_name, nf.allowed_ips[ip_index]);
     }
@@ -199,7 +284,10 @@ int nfilterflag(const char *jail_name, const char *jail_ip) {
     nft_ctx_free(nft_context);
 
     if (execution_status != 0) {
-        vault_log(LOG_ERROR, "[NET][ERROR] Failed to apply nftables rules for jail '%s'", jail_name);
+        vault_log(LOG_ERROR,
+                  "[NET][ERROR] nft_run_cmd_from_buffer failed (status=%d) applying "
+                  "rules for jail '%s' — network unfiltered!",
+                  execution_status, jail_name);
         return -1;
     }
 
@@ -207,13 +295,49 @@ int nfilterflag(const char *jail_name, const char *jail_ip) {
     return 0;
 }
 
-/* -- Cleanup: remover par veth após o jail sair --- */
+/* -- Cleanup: remove veth pair after jail exits --- */
 int vsb_cleanup_veth(const char *name_prefix) {
+    if (validate_name_prefix(name_prefix) != 0)
+        return -1;
     net_exec("ip link del %s0 2>/dev/null", name_prefix);
     return 0;
 }
 
-/* Wrapper público */
+/* Public wrapper */
 int vsb_net_veth_setup(pid_t child_pid, const char *jail_ip, const char *gw_ip, const char *name_prefix) {
     return vsb_setup_veth_host(child_pid, jail_ip, gw_ip, name_prefix);
 }
+
+#else /* !__linux__ */
+
+int vsb_setup_veth_host(pid_t child_pid, const char *jail_ip, const char *gw_ip, const char *name_prefix) {
+    (void)child_pid; (void)jail_ip; (void)gw_ip; (void)name_prefix;
+    return 0;
+}
+
+int vsb_configure_veth_inside(const char *jail_ip, const char *gw_ip, const char *name_prefix) {
+    (void)jail_ip; (void)gw_ip; (void)name_prefix;
+    return 0;
+}
+
+int user_send_set_ip(const char *set_name, const char *ip) {
+    (void)set_name; (void)ip;
+    return 0;
+}
+
+int nfilterflag(const char *jail_name, const char *jail_ip) {
+    (void)jail_name; (void)jail_ip;
+    return 0;
+}
+
+int vsb_cleanup_veth(const char *name_prefix) {
+    (void)name_prefix;
+    return 0;
+}
+
+int vsb_net_veth_setup(pid_t child_pid, const char *jail_ip, const char *gw_ip, const char *name_prefix) {
+    (void)child_pid; (void)jail_ip; (void)gw_ip; (void)name_prefix;
+    return 0;
+}
+
+#endif /* __linux__ */

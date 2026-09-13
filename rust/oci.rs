@@ -13,20 +13,20 @@ use oci_spec::runtime::Spec;
 use std::process::Command;
 
 /// Pulls a rootfs tarball or OCI image from a given URL/alias and extracts it.
-/// Tenta usar `skopeo` + `umoci` primeiro. Se falhar (não instalados ou não suportado),
-/// cai para o modo raw tarball com `reqwest` + `tar`.
+/// Attempts to use `skopeo` + `umoci` first. If that fails (not installed or unsupported),
+/// falls back to raw tarball mode with `reqwest` + `tar`.
 pub fn pull_and_extract_image(url: &str, target_dir: &Path) -> Result<(), String> {
     println!("Pulling image from {}...", url);
 
-    // Se a URL for um repositório Docker (ex: docker://alpine), tenta com skopeo/umoci
+    // If URL is a Docker repository (e.g., docker://alpine), attempt skopeo/umoci
     if url.starts_with("docker://") || url.starts_with("oci://") {
-        println!("Tentando baixar via skopeo e extrair via umoci...");
+        println!("Attempting download via skopeo and extraction via umoci...");
         let oci_layout_dir = "/tmp/nuk4sd_oci_layout";
         let _ = std::fs::remove_dir_all(oci_layout_dir);
 
-        /* FIX #9: usar paths absolutos para skopeo/umoci — previne supply-chain attack
-         * via PATH comprometido. Tenta /usr/bin primeiro (Debian/Ubuntu/Kali),
-         * /usr/local/bin como fallback (instalação manual). */
+        /* FIX #9: use absolute paths for skopeo/umoci — prevents supply-chain attack
+         * via compromised PATH. Tries /usr/bin first (Debian/Ubuntu/Kali),
+         * /usr/local/bin as fallback (manual installation). */
         let skopeo_bin = if std::path::Path::new("/usr/bin/skopeo").exists() {
             "/usr/bin/skopeo"
         } else {
@@ -46,7 +46,7 @@ pub fn pull_and_extract_image(url: &str, target_dir: &Path) -> Result<(), String
 
         if let Ok(status) = skopeo_status {
             if status.success() {
-                println!("Imagem baixada com skopeo. Extraindo com umoci...");
+                println!("Image downloaded with skopeo. Extracting with umoci...");
                 let umoci_status = Command::new(umoci_bin)
                     .arg("unpack")
                     .arg("--image")
@@ -56,17 +56,17 @@ pub fn pull_and_extract_image(url: &str, target_dir: &Path) -> Result<(), String
 
                 if let Ok(ustatus) = umoci_status {
                     if ustatus.success() {
-                        println!("Imagem extraída com umoci em {:?}", target_dir);
+                        println!("Image extracted with umoci to {:?}", target_dir);
                         let _ = std::fs::remove_dir_all(oci_layout_dir);
                         return Ok(());
                     }
                 }
-                println!("Falha na extração com umoci. Tentando método fallback...");
+                println!("Extraction failed with umoci. Trying fallback method...");
             } else {
-                println!("Falha no download com skopeo. Tentando método fallback...");
+                println!("Download failed with skopeo. Trying fallback method...");
             }
         } else {
-            println!("skopeo/umoci não encontrados. Tentando método fallback HTTP...");
+            println!("skopeo/umoci not found. Trying HTTP fallback method...");
         }
     }
 
@@ -93,24 +93,88 @@ pub fn pull_and_extract_image(url: &str, target_dir: &Path) -> Result<(), String
     Ok(())
 }
 
-/// Creates a cgroup v2 with CPU/Memory limits.
-pub fn apply_cgroup_limits(cgroup_name: &str, pid: u64, memory_limit_mb: i64, cpu_shares: u64) -> Result<Cgroup, String> {
+/// Creates a cgroup v1/v2 with CPU, Memory, and PID limits, and assigns `pid` to it.
+pub fn apply_cgroup_limits(
+    cgroup_name: &str,
+    pid: u64,
+    memory_limit_mb: i64,
+    cpu_shares: u64,
+    cpu_quota_us: i64,
+    max_procs: i64,
+) -> Result<Cgroup, String> {
     let hier = cgroups_rs::hierarchies::auto();
-    let cg = CgroupBuilder::new(cgroup_name)
-        .memory()
-            .memory_hard_limit(memory_limit_mb * 1024 * 1024)
-            .done()
-        .cpu()
-            .shares(cpu_shares)
-            .done()
+    let mut builder = CgroupBuilder::new(cgroup_name);
+
+    if memory_limit_mb > 0 {
+        let bytes = memory_limit_mb.saturating_mul(1024 * 1024);
+        builder = builder.memory().memory_hard_limit(bytes).done();
+    }
+
+    if cpu_shares > 0 || cpu_quota_us > 0 {
+        let mut cpu_b = builder.cpu();
+        if cpu_shares > 0 {
+            cpu_b = cpu_b.shares(cpu_shares);
+        }
+        if cpu_quota_us > 0 {
+            cpu_b = cpu_b.quota(cpu_quota_us).period(100_000);
+        }
+        builder = cpu_b.done();
+    }
+
+    if max_procs > 0 {
+        builder = builder
+            .pid()
+            .maximum_number_of_processes(cgroups_rs::MaxValue::Value(max_procs))
+            .done();
+    }
+
+    let cg = builder
         .build(hier)
-        .map_err(|e| format!("Failed to build cgroup: {}", e))?;
+        .map_err(|e| format!("Failed to build cgroup '{}': {}", cgroup_name, e))?;
 
-    let cpus: &cgroups_rs::cpu::CpuController = cg.controller_of().unwrap();
-    cpus.add_task(&CgroupPid::from(pid)).map_err(|e| format!("Failed to add task to cgroup: {}", e))?;
+    let cpid = CgroupPid::from(pid);
+    let mut attached = false;
 
-    println!("Cgroup '{}' limits applied to PID {}", cgroup_name, pid);
+    // Attach PID to CPU controller if available
+    if let Some(cpus) = cg.controller_of::<cgroups_rs::cpu::CpuController>() {
+        if let Err(e) = cpus.add_task(&cpid) {
+            eprintln!("[CGROUP] Warning: failed to add PID {} to cpu controller: {}", pid, e);
+        } else {
+            attached = true;
+        }
+    }
+
+    // Attach PID to Memory controller if available
+    if let Some(mem) = cg.controller_of::<cgroups_rs::memory::MemController>() {
+        if let Err(e) = mem.add_task(&cpid) {
+            eprintln!("[CGROUP] Warning: failed to add PID {} to memory controller: {}", pid, e);
+        } else {
+            attached = true;
+        }
+    }
+
+    // Attach PID to PID controller if available
+    if let Some(pids) = cg.controller_of::<cgroups_rs::pid::PidController>() {
+        if let Err(e) = pids.add_task(&cpid) {
+            eprintln!("[CGROUP] Warning: failed to add PID {} to pid controller: {}", pid, e);
+        } else {
+            attached = true;
+        }
+    }
+
+    if !attached {
+        return Err(format!("Could not attach PID {} to any cgroup controller in '{}'", pid, cgroup_name));
+    }
+
+    println!("[CGROUP] Cgroup '{}' limits applied to PID {}", cgroup_name, pid);
     Ok(cg)
+}
+
+/// Deletes an existing cgroup by name.
+pub fn remove_cgroup(cgroup_name: &str) -> Result<(), String> {
+    let hier = cgroups_rs::hierarchies::auto();
+    let cg = Cgroup::load(hier, cgroup_name);
+    cg.delete().map_err(|e| format!("Failed to delete cgroup '{}': {}", cgroup_name, e))
 }
 
 /// Reads a standard OCI config.json to configure the sandbox.

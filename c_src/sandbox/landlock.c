@@ -3,18 +3,18 @@
  *
  * Nuk4sd — Sandbox — Landlock LSM (Linux 5.13+)
  *
- * Terceira camada de MAC (Mandatory Access Control) além do Seccomp-BPF.
- * Enquanto o Seccomp bloqueia syscalls pelo número, o Landlock bloqueia
- * acesso a paths específicos no VFS — complementares e independentes.
+ * Third layer of MAC (Mandatory Access Control) alongside Seccomp-BPF.
+ * While Seccomp blocks syscalls by number, Landlock blocks
+ * access to specific paths in VFS — complementary and independent.
  *
- * Estratégia: nega tudo por padrão, depois abre exatamente os paths
- * que o processo precisa (derivados dos bind mounts do CliConfig).
+ * Strategy: deny everything by default, then open exactly the paths
+ * that the process needs (derived from CliConfig bind mounts).
  *
- * Compatibilidade:
- *   - Kernel >= 5.13: Landlock ABI v1 (básico)
+ * Compatibility:
+ *   - Kernel >= 5.13: Landlock ABI v1 (basic)
  *   - Kernel >= 5.19: Landlock ABI v2 (+ LANDLOCK_ACCESS_FS_REFER)
  *   - Kernel >= 6.2 : Landlock ABI v3 (+ LANDLOCK_ACCESS_FS_TRUNCATE)
- *   - Kernel <  5.13: fallback silencioso — sandbox continua via Seccomp
+ *   - Kernel <  5.13: silent fallback — sandbox continues via Seccomp
  */
 
 #define _GNU_SOURCE
@@ -33,7 +33,7 @@
 #include <string.h>
 #include <stdio.h>
 
-/* ── Syscall wrappers (landlock não tem wrapper na glibc ainda) ───────── */
+/* ── Syscall wrappers (landlock has no glibc wrapper yet) ───────── */
 #ifndef __NR_landlock_create_ruleset
 #define __NR_landlock_create_ruleset 444
 #define __NR_landlock_add_rule       445
@@ -47,19 +47,19 @@
 #define ll_restrict_self(fd, flags) \
     syscall(__NR_landlock_restrict_self, fd, flags)
 
-/* ── Detecção de ABI disponível ──────────────────────────────────────── */
+/* ── Available ABI detection ──────────────────────────────────────── */
 static int landlock_abi_version(void)
 {
     struct landlock_ruleset_attr probe = { .handled_access_fs = 0 };
     int fd = ll_create_ruleset(&probe, sizeof(probe),
                                LANDLOCK_CREATE_RULESET_VERSION);
-    if (fd < 0) return -1; /* kernel sem suporte */
+    if (fd < 0) return -1; /* kernel unsupported */
     close(fd);
-    /* fd retornado é a versão ABI quando flag=VERSION */
+    /* returned fd is the ABI version when flag=VERSION */
     return (int)(long)fd;
 }
 
-/* ── Acesso FS completo suportado por ABI ─────────────────────────────── */
+/* ── Full FS access supported by ABI ─────────────────────────────── */
 static __u64 landlock_fs_access_all(int abi)
 {
     __u64 access =
@@ -78,20 +78,20 @@ static __u64 landlock_fs_access_all(int abi)
         LANDLOCK_ACCESS_FS_MAKE_SYM;
 
     if (abi >= 2)
-        access |= LANDLOCK_ACCESS_FS_REFER;       /* hardlinks entre dirs */
+        access |= LANDLOCK_ACCESS_FS_REFER;       /* hardlinks between dirs */
     if (abi >= 3)
         access |= LANDLOCK_ACCESS_FS_TRUNCATE;    /* truncate(2) */
 
     return access;
 }
 
-/* ── Adiciona uma regra para um path com os acessos permitidos ────────── */
+/* ── Adds a rule for a path with allowed access permissions ────────── */
 static int ll_allow_path(int ruleset_fd, const char *path, __u64 allowed)
 {
     int fd = open(path, O_PATH | O_CLOEXEC);
     if (fd < 0) {
-        /* path pode não existir (bind mount ainda não feito) — não é fatal */
-        vault_log(LOG_WARN, "[LANDLOCK] open(O_PATH) falhou para '%s': %s",
+        /* path might not exist (bind mount not performed yet) — non-fatal */
+        vault_log(LOG_WARN, "[LANDLOCK] open(O_PATH) failed for '%s': %s",
                   path, strerror(errno));
         return 0;
     }
@@ -105,28 +105,33 @@ static int ll_allow_path(int ruleset_fd, const char *path, __u64 allowed)
     close(fd);
 
     if (ret < 0) {
-        vault_log(LOG_WARN, "[LANDLOCK] add_rule falhou para '%s': %s",
+        vault_log(LOG_WARN, "[LANDLOCK] add_rule failed for '%s': %s",
                   path, strerror(errno));
     }
     return ret;
 }
 
 /*════
- *  landlock_apply — entry point principal
+ *  landlock_apply — main entry point
  *
- *  Constrói o ruleset com base nos bind mounts declarados no CliConfig:
+ *  Builds ruleset based on bind mounts declared in CliConfig:
  *    BIND_RO      → READ_FILE | READ_DIR | EXECUTE
- *    BIND_RW      → acesso completo (escrita, criação, etc.)
- *    BIND_BLACKLIST → nada — path não aparece no ruleset → acesso negado
+ *    BIND_RW      → full access (write, create, etc.)
+ *    BIND_BLACKLIST → nothing — path doesn't appear in ruleset → access denied
  *
- *  Além dos binds do usuário, sempre permite:
+ *  In addition to user binds, always allows:
  *    /proc/self   → getpid, /proc/self/fd, etc.
- *    /dev         → /dev/null, /dev/urandom, /dev/fuse — já montados
- *    /tmp         → alguns apps precisam de /tmp
- *    vault_root   → o diretório raiz do jail (pivot_root já feito antes)
+ *    /dev         → /dev/null, /dev/urandom, /dev/fuse — already mounted
+ *    /tmp         → some apps need /tmp
+ *    vault_root   → jail root directory (pivot_root performed beforehand)
  *
- *  Retorna 0 em sucesso, -1 se Landlock não suportado (kernel antigo).
- *  Fallback silencioso: sandbox continua sem Landlock — Seccomp permanece.
+ *  Returns:
+ *     0  → success, Landlock active
+ *    -1  → kernel does not support Landlock (ABI < 1) — silent fallback OK
+ *    -2  → kernel SUPPORTS Landlock but unexpected error (LOG_ALERT emitted)
+ *
+ *  Caller MUST distinguish -1 from -2: -1 is silent, -2 must be
+ *  signaled to the user as the process runs WITHOUT VFS restrictions.
  *════ */
 int landlock_apply(const CliConfig *cfg, const char *vault_root)
 {
@@ -134,11 +139,11 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
 
     int abi = landlock_abi_version();
     if (abi < 0) {
-        vault_log(LOG_INFO, "[LANDLOCK] kernel sem suporte (ABI < 1) — skipped");
-        return -1; /* não fatal */
+        vault_log(LOG_INFO, "[LANDLOCK] kernel unsupported (ABI < 1) — Seccomp remains active");
+        return -1; /* non-fatal: old kernel, silent fallback */
     }
 
-    vault_log(LOG_INFO, "[LANDLOCK] ABI v%d detectada", abi);
+    vault_log(LOG_INFO, "[LANDLOCK] ABI v%d detected", abi);
 
     __u64 all_access = landlock_fs_access_all(abi);
     __u64 ro_access  = LANDLOCK_ACCESS_FS_EXECUTE |
@@ -151,21 +156,24 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
 
     int ruleset_fd = ll_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
     if (ruleset_fd < 0) {
-        vault_log(LOG_WARN, "[LANDLOCK] create_ruleset falhou: %s", strerror(errno));
-        return -1;
+        /* Kernel supports Landlock (abi >= 1) but create_ruleset failed — unexpected */
+        vault_log(LOG_ALERT,
+                  "[LANDLOCK][ALERT] kernel supports Landlock (ABI v%d) but "
+                  "create_ruleset failed: %s — VFS unrestricted!", abi, strerror(errno));
+        return -2;
     }
 
-    /* ── Paths sempre permitidos (base do sistema dentro do jail) ─────── */
-    /* FIX #6: /tmp NÃO tem all_access aqui — o mount namespace cria um tmpfs
-     * isolado via vsb_prepare_mounts() DEPOIS do pivot_root. Dar all_access a
-     * /tmp ANTES do pivot_root permitiria escrita no /tmp do HOST.
-     * Aplicamos apenas ro_access em /tmp host (leitura temporária pré-pivot),
-     * e após o pivot o Landlock ruleset já está ancorado nos inodes do jail. */
+    /* ── Always allowed paths (base system inside jail) ─────── */
+    /* FIX #6: /tmp does NOT have all_access here — mount namespace creates an isolated tmpfs
+     * via vsb_prepare_mounts() AFTER pivot_root. Giving all_access to /tmp BEFORE
+     * pivot_root would allow writing to HOST /tmp.
+     * We apply only ro_access to host /tmp (pre-pivot temporary reading),
+     * and after pivot the Landlock ruleset is already anchored to jail inodes. */
     static const struct { const char *path; int rw; } base_paths[] = {
         { "/proc/self",   0 },
         { "/proc/self/fd",0 },
         { "/dev",         0 },
-        { "/tmp",         0 }, /* FIX #6: apenas leitura — escrita é do tmpfs isolado */
+        { "/tmp",         0 }, /* FIX #6: read-only — write goes to isolated tmpfs */
         { "/run",         0 },
     };
     for (size_t i = 0; i < sizeof(base_paths)/sizeof(base_paths[0]); i++) {
@@ -173,11 +181,11 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
                       base_paths[i].rw ? all_access : ro_access);
     }
 
-    /* ── Vault root (jail root onde pivot_root aterrou) ──────────────── */
+    /* ── Vault root (jail root where pivot_root landed) ──────────────── */
     if (vault_root && *vault_root)
         ll_allow_path(ruleset_fd, vault_root, all_access);
 
-    /* ── Bind mounts declarados pelo usuário ─────────────────────────── */
+    /* ── User-declared bind mounts ─────────────────────────── */
     for (int i = 0; i < cfg->bind_count; i++) {
         const BindEntry *b = &cfg->binds[i];
         switch (b->type) {
@@ -188,7 +196,7 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
             ll_allow_path(ruleset_fd, b->path, all_access);
             break;
         case BIND_BLACKLIST:
-            /* sem regra → acesso negado automaticamente */
+            /* no rule → access automatically denied */
             break;
         }
     }
@@ -202,18 +210,22 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
             ll_allow_path(ruleset_fd, home, all_access);
     }
 
-    /* ── Aplicar o ruleset ao thread atual (e todos os filhos) ─────── */
-    /* PR_SET_NO_NEW_PRIVS já foi setado em caps.c — verificar de qualquer forma */
+    /* ── Apply ruleset to current thread (and all children) ─────── */
+    /* PR_SET_NO_NEW_PRIVS was already set in caps.c — check anyway */
     prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 
     if (ll_restrict_self(ruleset_fd, 0) < 0) {
-        vault_log(LOG_ERROR, "[LANDLOCK] restrict_self falhou: %s", strerror(errno));
+        /* Kernel supports Landlock but restrict_self failed — process runs without VFS restriction */
+        vault_log(LOG_ALERT,
+                  "[LANDLOCK][ALERT] kernel supports Landlock (ABI v%d) but "
+                  "restrict_self failed: %s — process running WITHOUT VFS restriction!",
+                  abi, strerror(errno));
         close(ruleset_fd);
-        return -1;
+        return -2;
     }
 
     close(ruleset_fd);
-    vault_log(LOG_INFO, "[LANDLOCK] ruleset aplicado com %d bind(s)", cfg->bind_count);
+    vault_log(LOG_INFO, "[LANDLOCK] ruleset applied with %d bind(s)", cfg->bind_count);
     return 0;
 }
 
@@ -222,7 +234,7 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
 int landlock_apply(const CliConfig *cfg, const char *vault_root)
 {
     (void)cfg; (void)vault_root;
-    return -1; /* não suportado fora do Linux */
+    return -1; /* unsupported outside Linux */
 }
 
 #endif /* __linux__ */

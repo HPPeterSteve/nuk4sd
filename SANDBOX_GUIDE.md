@@ -1,44 +1,44 @@
-# Guia do Sandbox Nuk4sd
+# Nuk4sd Sandbox Guide
 
-Este guia detalha como utilizar o ambiente seguro (sandbox) do Nuk4sd para rodar aplicações gráficas e utilitários da CLI. Com as recentes atualizações de segurança (como os filtros Seccomp granulares e logs de kernel), o sandbox está pronto para garantir isolamento máximo com total observabilidade.
+This guide details how to use the Nuk4sd secure environment (sandbox) to run graphical applications and CLI utilities. With recent security updates (such as granular Seccomp filters and kernel audit logs), the sandbox provides maximum isolation with full observability.
 
-## 1. Executando Programas na CLI
+## 1. Running Programs via CLI
 
-Para rodar um programa dentro do cofre isolado, utilize a flag `--run`:
+To run a program inside the isolated vault, use the `--run` flag:
 
 ```bash
-# Formato Básico
-Nuk4sd --vault <id> --run <executável> [-- args_do_programa]
+# Basic Format
+Nuk4sd --vault <id> --run <executable> [-- program_args]
 
-# Exemplo: Rodando um shell bash protegido (assumindo montagens de sistema)
+# Example: Running a protected bash shell (assuming system mounts)
 Nuk4sd --vault 1 --ro /bin --ro /lib --ro /usr --run /bin/bash
 ```
 
-O comando executará o programa fazendo `pivot_root` para dentro do seu cofre, removendo todas as capabilities do Linux (`NO_NEW_PRIVS`) e ativando os filtros Seccomp.
+The command executes the program by performing `pivot_root` into your vault, dropping all Linux capabilities (`NO_NEW_PRIVS`), and enabling Seccomp filters.
 
-## 2. Controle do Seccomp-BPF
+## 2. Controlling Seccomp-BPF
 
-A implementação de Seccomp foi fortificada para bloquear explorações comuns, especificamente flags abusivas em `clone()` (como `CLONE_NEWUSER`). Existem três abordagens:
+The Seccomp implementation is hardened to block common exploit vectors, specifically abusive flags in `clone()` (such as `CLONE_NEWUSER`). Three approaches are available:
 
-*   **Padrão**: Permite I/O completo, sockets e uso de memória básico, além de permitir o `clone3` usado em bibliotecas glibc recentes.
-*   **Strict (`-q` ou `--seccomp-strict`)**: Bloqueia agressivamente Sockets, Memória Compartilhada (shm) e `clone3`. Restringe o app ao máximo, impedindo até comunicação entre processos que dependem dessas syscalls.
-*   **Clone3 Allow (`-k` ou `--allow-clone3`)**: Cria uma exceção no modo estrito apenas para o `clone3`. Extremamente útil para programas modernos que quebram sem essa syscall de thread, mas que você não deseja que tenham acesso à rede ou sockets.
+*   **Default**: Allows full I/O, sockets, and basic memory usage, as well as `clone3` used in recent glibc releases.
+*   **Strict (`-q` or `--seccomp-strict`)**: Aggressively blocks Sockets, Shared Memory (shm), and `clone3`. Restricts the app to the maximum degree, preventing inter-process communication relying on these syscalls.
+*   **Clone3 Allow (`-k` or `--allow-clone3`)**: Creates an exception in strict mode specifically for `clone3`. Extremely useful for modern programs that break without thread creation via `clone3`, but where network/socket access remains undesirable.
 
-**Exemplo de Proteção Máxima**:
+**Maximum Protection Example**:
 ```bash
 Nuk4sd --vault 1 --run secret_app --seccomp-strict --allow-clone3 
 ```
 
-## 4. Usando Perfis Prontos (Profiles)
+## 4. Using Profiles
 
-Ao invés de passar longos comandos na CLI toda vez que quiser rodar um programa, você pode criar perfis prontos `.conf`.
+Rather than passing long CLI flags every time you launch a program, you can create ready-to-use `.conf` profile files.
 
-### 4.1. Criando um Perfil
+### 4.1. Creating a Profile
 
-Crie um arquivo em `~/.config/Nuk4sd/browser.conf`:
+Create a file at `~/.config/Nuk4sd/browser.conf`:
 
 ```text
-# Perfil Estrito para Navegador
+# Strict Browser Profile
 --no-net
 --wayland
 --ro /usr
@@ -49,29 +49,29 @@ Crie um arquivo em `~/.config/Nuk4sd/browser.conf`:
 --audit
 ```
 
-### 4.2. Carregando um Perfil
+### 4.2. Loading a Profile
 
-Para rodar com o perfil:
+To execute with the profile:
 
 ```bash
 Nuk4sd --vault 1 --profile ~/.config/Nuk4sd/browser.conf --run firefox
 ```
 
-O Nuk4sd lerá cada flag e configurará todos os bind mounts (`--ro`, `--rw`, `--blacklist`) e opções de isolamento gráfico (`--wayland`, `--x11`) de uma só vez.
+Nuk4sd reads each flag and configures all bind mounts (`--ro`, `--rw`, `--blacklist`) and graphical isolation options (`--wayland`, `--x11`) in a single step.
 
-## 5. Flags Essenciais de Isolamento
+## 5. Essential Isolation Flags
 
-Aqui estão as bandeiras cruciais que você usará com programas:
+Here are crucial flags used for running programs:
 
-*   **Bind Mounts:** `--ro <caminho>`, `--rw <caminho>`, `--blacklist <caminho>` (esconde o diretório).
-*   **Networking:** `--no-net` (cria um novo namespace de rede, isolando-o da internet).
-*   **Gráficos:** `--wayland` e `--x11` (monta os sockets gráficos necessários, permitindo que a GUI renderize de dentro do cofre).
-*   **Ambiente/Diretórios Pessoais:** `--ro-home` (torna a pasta do usuário apenas leitura) e `--tmp-home` (falsifica uma pasta `/home` temporária que some ao fechar).
-*   **D-Bus:** `--no-dbus` (Isola do D-Bus da sessão do hospedeiro).
+*   **Bind Mounts:** `--ro <path>`, `--rw <path>`, `--blacklist <path>` (hides directory).
+*   **Networking:** `--no-net` (creates a new network namespace, isolating it from the internet).
+*   **Graphics:** `--wayland` and `--x11` (mounts necessary display sockets, allowing GUI rendering from inside the vault).
+*   **Environment/Home Directories:** `--ro-home` (makes user home directory read-only) and `--tmp-home` (provides a temporary ephemeral `/home` that disappears upon closing).
+*   **D-Bus:** `--no-dbus` (Isolates from host session D-Bus).
 
-## 6. Exemplo de Execução Blindada de Aplicação GUI
+## 6. Hardened GUI Application Execution Example
 
-Imaginando que queiramos executar um leitor de PDF secreto dentro do cofre de ID 3, montando os binários do sistema em modo readonly, mas garantindo blindagem WORM e isolamento Wayland:
+To execute a secret PDF reader inside vault ID 3, bind-mounting system binaries in read-only mode while ensuring WORM protection and Wayland isolation:
 
 ```bash
 Nuk4sd --vault 3 \

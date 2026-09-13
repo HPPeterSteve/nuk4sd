@@ -127,7 +127,7 @@ extern char g_lock_file[VAULT_PATH_MAX];
 
 /* Catalog binary format */
 #define CATALOG_MAGIC "VLTS"
-#define CATALOG_VER 2   /* v2: added worm_flags per-vault (uint32_t) */
+#define CATALOG_VER 3   /* v3: added mac_mode global (int8_t) */
 #define FCOUNT_MAX 1000
 
 /* Rule engine */
@@ -316,6 +316,7 @@ extern char g_lock_file[VAULT_PATH_MAX];
         uint32_t count;
         uint32_t next_id;
         char category[32]; /* "diamond" */
+        int8_t mac_mode;   /* -1 = unset, 0 = off, 1 = on */
     } Catalog;
 
     /* Monitor thread context */
@@ -456,15 +457,19 @@ extern char g_lock_file[VAULT_PATH_MAX];
 #define ENGINE_REAL_DIR ".engine_real"   /* subdir de arquivos reais        */
 #define ENGINE_LOG_PREFIX "[ENGINE]"
 
-    /* Camadas por engine:
-     *   0 → 0 camadas (sem labirinto)
-     *   1 → 1 camada,  arquivos a-z
-     *   2 → 3 camadas, arquivos a-z por camada
-     *   3 → 6 camadas, arquivos a-z por camada
-     *   4 → 16 camadas + binários falsos .enc
-     *   5 → 20 camadas + binários falsos .enc (OverlayFS adicionado depois)
-     */
-    static const int ENGINE_LAYER_COUNT[] = {0, 1, 3, 6, 16, 20};
+    /* Árvore de decoys por engine (profundidade x fator de ramificação):
+     *   nível 0 → sem labirinto
+     *   nível 1 → profundidade 1, ramificação 1  (1 nó,   ~26 arquivos)
+     *   nível 2 → profundidade 2, ramificação 2  (6 nós,  ~156 arquivos)
+     *   nível 3 → profundidade 3, ramificação 2  (14 nós, ~364 arquivos)
+     *   nível 4 → profundidade 4, ramificação 3  (120 nós, ~3120 arquivos) + binários falsos
+     *   nível 5 → profundidade 5, ramificação 3  (363 nós, ~9438 arquivos) + binários falsos
+     *
+     * Cada nó tem 'ramificação' filhos diretos (não é mais um funil linear
+     * de 1 filho só) — ver ENGINE_MAX_DECOY_NODES em vault_engine.c para o
+     * teto de segurança contra configurações que explodiriam o disco. */
+    static const int ENGINE_TREE_DEPTH[]  = {0, 1, 2, 3, 4, 5};
+    static const int ENGINE_TREE_BRANCH[] = {0, 1, 2, 2, 3, 3};
 
     VaultErrorr engine_apply(Vault *v);
     VaultErrorr engine_validate(Vault *v);
