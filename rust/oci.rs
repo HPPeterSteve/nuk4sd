@@ -16,6 +16,30 @@ use std::process::Command;
 /// Attempts to use `skopeo` + `umoci` first. If that fails (not installed or unsupported),
 /// falls back to raw tarball mode with `reqwest` + `tar`.
 pub fn pull_and_extract_image(url: &str, target_dir: &Path) -> Result<(), String> {
+    // If URL is a local SquashFS image file
+    if Path::new(url).exists() && (url.ends_with(".squashfs") || url.ends_with(".sqfs")) {
+        println!("[OCI] Unpacking local SquashFS image '{}' into {:?}...", url, target_dir);
+        let unsquashfs_bin = if Path::new("/usr/bin/unsquashfs").exists() {
+            "/usr/bin/unsquashfs"
+        } else {
+            "unsquashfs"
+        };
+        let status = Command::new(unsquashfs_bin)
+            .arg("-f")
+            .arg("-d")
+            .arg(target_dir.to_str().unwrap())
+            .arg(url)
+            .status()
+            .map_err(|e| format!("Failed to execute unsquashfs (is squashfs-tools installed?): {}", e))?;
+
+        if status.success() {
+            println!("[OCI] SquashFS successfully unpacked to {:?}", target_dir);
+            return Ok(());
+        } else {
+            return Err(format!("unsquashfs exited with error status: {:?}", status.code()));
+        }
+    }
+
     println!("Pulling image from {}...", url);
 
     // If URL is a Docker repository (e.g., docker://alpine), attempt skopeo/umoci
