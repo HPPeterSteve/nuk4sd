@@ -1,0 +1,13 @@
+post_install() {
+    echo "==> Nuk4sd instalado com sucesso!"
+    echo "==> Binário disponível em: /usr/bin/nuk4sd"
+    echo "==> Runtime SquashFS em: /usr/share/nuk4sd/runtime/ubuntu24_04.squashfs"
+    echo "==> Dica para Arch Linux:"
+    echo "    Se for rodar programas recentes com glibc moderna dentro do sandbox,"
+    echo "    use a flag '-k' para liberar a syscall clone3:"
+    echo "    nuk4sd --vault <id> --run <programa> -k"
+}
+
+post_upgrade() {
+    post_install
+}
