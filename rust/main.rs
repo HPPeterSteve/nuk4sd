@@ -56,6 +56,26 @@ fn main() {
         }
     }
 
+    // Rust-side interactive manual and system telemetry
+    if args.len() >= 2 {
+        if args[1] == "--manual" || args[1] == "-m" {
+            manual::show_manual();
+            std::process::exit(0);
+        }
+        if args[1] == "--sysinfo" {
+            let filter = args.get(2).map(|s| s.as_str()).unwrap_or("all");
+            let options = sys_info::SystemOptions {
+                cpu: filter == "all" || filter == "cpu",
+                memory: filter == "all" || filter == "mem" || filter == "memory",
+                disks: filter == "all" || filter == "disk" || filter == "disks",
+                networks: filter == "all" || filter == "net" || filter == "network",
+                processes: filter == "all" || filter == "proc" || filter == "processes",
+            };
+            sys_info::system_information(options);
+            std::process::exit(0);
+        }
+    }
+
     /* --help and --version must never touch catalog.dat.
      * Detect them early and delegate directly to the CLI without init. */
     let is_info_only = args.len() == 2 &&
