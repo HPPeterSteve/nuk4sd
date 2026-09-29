@@ -2811,7 +2811,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                       cfg->run_exec ? cfg->run_exec : "?", cfg->vault_id, (int)getpid());
         }
 
-        /* [LANDLOCK] Layer 3 VFS MAC — OPT-IN since v0.9.32
+        /* [LANDLOCK] Layer 3 VFS MAC — OPT-IN since v0.9.30-2
          * Use --landlock to enable. Off by default because bind-mount inodes
          * post-pivot_root differ from host inodes registered pre-pivot,
          * causing false EPERM on legitimately bind-mounted paths. */
