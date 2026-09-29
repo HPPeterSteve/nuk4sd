@@ -1,6 +1,6 @@
 [package]
 name = "Nuk4sd"
-version = "0.9.30"
+version = "0.9.30-2"
 edition = "2021"
 build = "build.rs"
 description = "Linux process isolation sandbox and encrypted vault management tool"

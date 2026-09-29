@@ -32,6 +32,7 @@ typedef enum {
     CLI_LOG_INFO  = 1,   /* operation progress                       */
     CLI_LOG_KERN  = 2,   /* kernel interaction (mount, ns, prctl)    */
     CLI_LOG_SEC   = 3,   /* security (auth, caps, seccomp, WORM)     */
+    CLI_LOG_AUDIT = 3,   /* alias for security audit events          */
     CLI_LOG_WARN  = 4,   /* non-fatal warning                        */
     CLI_LOG_ERROR = 5,   /* failure                                  */
 } CliLogLevel;

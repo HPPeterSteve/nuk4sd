@@ -73,9 +73,62 @@ pub fn decrypt_file(path: &Path, password: &str) -> Result<(), Box<dyn std::erro
         .map_err(|e| format!("Decryption error: {}", e))?;
 
     let new_path = path.with_extension("dec");
-    fs::write(&new_path, decrypted)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&new_path)?;
+        std::io::Write::write_all(&mut f, &decrypted)?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&new_path, decrypted)?;
+    }
     println!("Arquivo descriptografado salvo em: {:?}", new_path);
 
+    Ok(())
+}
+
+/// FIX [Finding 24]: Re-encrypts file directly in memory without creating temporary plaintext files on disk
+pub fn rekey_file(path: &Path, old_password: &str, new_password: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let data = fs::read(path)?;
+    if data.len() < SALT_LEN + 12 {
+        return Err("Error: File corrupted or too small.".into());
+    }
+
+    let (salt, rest) = data.split_at(SALT_LEN);
+    let (nonce_slice, ciphertext) = rest.split_at(12);
+    let nonce = Nonce::from_slice(nonce_slice);
+
+    let old_key_bytes = derive_key_from_password(old_password, salt);
+    let old_cipher = Aes256Gcm::new_from_slice(&old_key_bytes).map_err(|_| "Chave antiga inválida")?;
+
+    let decrypted = old_cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Decryption error: {}", e))?;
+
+    let mut new_salt = [0u8; SALT_LEN];
+    RandOsRng.fill_bytes(&mut new_salt);
+
+    let new_key_bytes = derive_key_from_password(new_password, &new_salt);
+    let new_cipher = Aes256Gcm::new_from_slice(&new_key_bytes).map_err(|_| "Chave nova inválida")?;
+    let new_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+
+    let new_encrypted = new_cipher
+        .encrypt(&new_nonce, decrypted.as_ref())
+        .map_err(|e| format!("Encryption error: {}", e))?;
+
+    let mut final_data = Vec::with_capacity(SALT_LEN + 12 + new_encrypted.len());
+    final_data.extend_from_slice(&new_salt);
+    final_data.extend_from_slice(&new_nonce);
+    final_data.extend_from_slice(&new_encrypted);
+
+    // Atomically overwrite existing file with new ciphertext - plaintext never touched disk!
+    fs::write(path, final_data)?;
     Ok(())
 }
 

@@ -51,6 +51,7 @@ fn main() {
         "c_src/sandbox/net.c",
         "c_src/sandbox/autority.c",
         "c_src/sandbox/apparmor.c",
+        "c_src/sandbox/landlock.c",
     ];
 
     /* ── CLI interface ──────────────────────────────────────────────────────

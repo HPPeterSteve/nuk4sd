@@ -8,7 +8,6 @@
 #ifdef __linux__
 #include <uuid/uuid.h>
 #include <sys/prctl.h>
-#endif
 
 
 static int hash_string(const char *str) {

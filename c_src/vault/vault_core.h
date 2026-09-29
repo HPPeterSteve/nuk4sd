@@ -401,6 +401,7 @@ extern char g_lock_file[VAULT_PATH_MAX];
     VaultErrorr auth_verify_password(Vault *v, const char *password);
     VaultErrorr encrypt_file(const char *inpath, const char *outpath, const uint8_t key[KEY_LEN]);
     VaultErrorr decrypt_file(const char *inpath, const char *outpath, const uint8_t key[KEY_LEN]);
+    VaultErrorr rekey_vault_files(const Vault *v, const uint8_t old_key[KEY_LEN], const uint8_t new_key[KEY_LEN]);
 
     /* vault_catalog.c */
     VaultErrorr catalog_save(void);

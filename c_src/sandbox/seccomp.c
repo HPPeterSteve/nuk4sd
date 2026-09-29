@@ -55,82 +55,111 @@ static int g_seccomp_friendly   = 0;
 static int g_seccomp_permissive = 0;
 static const char *g_seccomp_adapter = NULL;
 
-static void apply_adapter_rules(scmp_filter_ctx ctx, const char *adapter_str)
+#define MAX_ADAPTER_DECLINES 128
+static int g_declined_syscalls[MAX_ADAPTER_DECLINES];
+static size_t g_declined_count = 0;
+
+static bool is_syscall_declined(int sc)
 {
-    if (!adapter_str || !*adapter_str) return;
+    for (size_t i = 0; i < g_declined_count; i++) {
+        if (g_declined_syscalls[i] == sc) return true;
+    }
+    return false;
+}
+
+/* FIX [Finding 17]: Resolve adapter declines BEFORE adding baseline allow rules */
+static int parse_adapter_declines(const char *adapter_str)
+{
+    g_declined_count = 0;
+    if (!adapter_str || !*adapter_str) return 0;
+
+    char buf[1024];
+    strncpy(buf, adapter_str, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *decline_pos = strstr(buf, "decline:");
+    if (!decline_pos) return 0;
+
+    char *decline_block = decline_pos + 8;
+    char *accept_pos = strstr(decline_block, "accept:");
+    if (accept_pos) *accept_pos = '\0';
+
+    char *saveptr = NULL;
+    char *tok = strtok_r(decline_block, ",; \t\r\n", &saveptr);
+    while (tok) {
+        if (*tok && strcasecmp(tok, "empty") != 0) {
+            int sc = seccomp_syscall_resolve_name(tok);
+            if (sc != __NR_SCMP_ERROR && sc >= 0) {
+                if (g_declined_count < MAX_ADAPTER_DECLINES) {
+                    g_declined_syscalls[g_declined_count++] = sc;
+                }
+                vault_log(LOG_INFO, "[SECCOMP] adapter: registered declined syscall '%s' (nr=%d)", tok, sc);
+            } else {
+                vault_log(LOG_WARN, "[SECCOMP] adapter: unknown syscall '%s'", tok);
+            }
+        }
+        tok = strtok_r(NULL, ",; \t\r\n", &saveptr);
+    }
+    return 0;
+}
+
+static int apply_adapter_accept_rules(scmp_filter_ctx ctx, const char *adapter_str)
+{
+    if (!adapter_str || !*adapter_str) return 0;
 
     char buf[1024];
     strncpy(buf, adapter_str, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
     char *accept_pos = strstr(buf, "accept:");
-    char *decline_pos = strstr(buf, "decline:");
+    if (!accept_pos) return 0;
 
-    char *accept_block = NULL;
-    char *decline_block = NULL;
+    char *accept_block = accept_pos + 7;
+    char *decline_pos = strstr(accept_block, "decline:");
+    if (decline_pos) *decline_pos = '\0';
 
-    if (accept_pos) {
-        accept_block = accept_pos + 7;
-    }
-    if (decline_pos) {
-        decline_block = decline_pos + 8;
-    }
-
-    if (accept_pos && decline_pos) {
-        if (accept_pos < decline_pos) {
-            *decline_pos = '\0';
-        } else {
-            *accept_pos = '\0';
-        }
-    }
-
-    if (accept_block) {
-        char *saveptr = NULL;
-        char *tok = strtok_r(accept_block, ",; \t\r\n", &saveptr);
-        while (tok) {
-            if (*tok && strcasecmp(tok, "empty") != 0) {
-                int sc = seccomp_syscall_resolve_name(tok);
-                if (sc != __NR_SCMP_ERROR && sc >= 0) {
-                    seccomp_rule_add(ctx, SCMP_ACT_ALLOW, sc, 0);
+    char *saveptr = NULL;
+    char *tok = strtok_r(accept_block, ",; \t\r\n", &saveptr);
+    while (tok) {
+        if (*tok && strcasecmp(tok, "empty") != 0) {
+            int sc = seccomp_syscall_resolve_name(tok);
+            if (sc != __NR_SCMP_ERROR && sc >= 0) {
+                if (!is_syscall_declined(sc)) {
+                    int rc = seccomp_rule_add(ctx, SCMP_ACT_ALLOW, sc, 0);
+                    if (rc != 0 && rc != -EEXIST) {
+                        vault_log(LOG_ERROR, "[SECCOMP] adapter: failed to install allow rule for '%s' (rc=%d)", tok, rc);
+                        return -1;
+                    }
                     vault_log(LOG_INFO, "[SECCOMP] adapter: allowed syscall '%s' (nr=%d)", tok, sc);
-                } else {
-                    vault_log(LOG_WARN, "[SECCOMP] adapter: unknown syscall '%s' (ignored)", tok);
-                    fprintf(stderr, "\033[33m⚠ [SECCOMP] adapter: unknown syscall '%s' ignored\033[0m\n", tok);
                 }
+            } else {
+                vault_log(LOG_WARN, "[SECCOMP] adapter: unknown syscall '%s' (ignored)", tok);
             }
-            tok = strtok_r(NULL, ",; \t\r\n", &saveptr);
         }
+        tok = strtok_r(NULL, ",; \t\r\n", &saveptr);
     }
-
-    if (decline_block) {
-        char *saveptr = NULL;
-        char *tok = strtok_r(decline_block, ",; \t\r\n", &saveptr);
-        while (tok) {
-            if (*tok && strcasecmp(tok, "empty") != 0) {
-                int sc = seccomp_syscall_resolve_name(tok);
-                if (sc != __NR_SCMP_ERROR && sc >= 0) {
-                    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), sc, 0);
-                    vault_log(LOG_INFO, "[SECCOMP] adapter: declined syscall '%s' (nr=%d)", tok, sc);
-                } else {
-                    vault_log(LOG_WARN, "[SECCOMP] adapter: unknown syscall '%s' (ignored)", tok);
-                    fprintf(stderr, "\033[33m⚠ [SECCOMP] adapter: unknown syscall '%s' ignored\033[0m\n", tok);
-                }
-            }
-            tok = strtok_r(NULL, ",; \t\r\n", &saveptr);
-        }
-    }
+    return 0;
 }
 
-/* ── Macro helper: adds syscall to allowlist, silently ignoring syscalls
- * that do not exist on the current architecture (SCMP_SYS returns -1). */
+/* ── Macro helper: adds syscall to allowlist if not declined, and checks return code */
 #define ALLOW(ctx, sc) \
     do { \
         int _nr = (int)(sc); \
-        if (_nr >= 0) seccomp_rule_add((ctx), SCMP_ACT_ALLOW, (uint32_t)_nr, 0); \
+        if (_nr >= 0 && !is_syscall_declined(_nr)) { \
+            int _rc = seccomp_rule_add((ctx), SCMP_ACT_ALLOW, (uint32_t)_nr, 0); \
+            if (_rc != 0 && _rc != -EEXIST) { \
+                vault_log(LOG_ERROR, "[SECCOMP] seccomp_rule_add failed for nr=%d (rc=%d)", _nr, _rc); \
+                seccomp_release(ctx); \
+                return -1; \
+            } \
+        } \
     } while (0)
 
 static int apply_seccomp_policy(void)
 {
+    /* FIX [Finding 17]: Resolve adapter declines before adding baseline allow rules */
+    parse_adapter_declines(g_seccomp_adapter);
+
     /*
      * Allowlist: default DENY — only explicitly listed system calls
      * below are permitted. Any unlisted syscall -> EPERM.
@@ -269,6 +298,15 @@ static int apply_seccomp_policy(void)
     ALLOW(ctx, SCMP_SYS(munlockall));
     ALLOW(ctx, SCMP_SYS(brk));
     ALLOW(ctx, SCMP_SYS(mincore));
+
+    /* ── TLS / Thread setup — critical for execve on x86_64 ─────────────
+     * arch_prctl(ARCH_SET_FS) sets the TLS segment base for the new process
+     * after execve. set_tid_address registers the thread-ID pointer.
+     * Without these, glibc emits "Fatal glibc error: Cannot allocate TLS
+     * block" before any user code runs (exit_code=127). ── */
+    ALLOW(ctx, SCMP_SYS(arch_prctl));
+    ALLOW(ctx, SCMP_SYS(set_tid_address));
+    ALLOW(ctx, SCMP_SYS(set_thread_area)); /* 32-bit TLS fallback */
 
     /* ── Polling and events ───────────────────────────────────────────────── */
     ALLOW(ctx, SCMP_SYS(select));
@@ -420,11 +458,19 @@ static int apply_seccomp_policy(void)
     }
 
     /* ── Always denied — immediate KILL for high risk ──────────── */
-    seccomp_rule_add(ctx, SCMP_ACT_KILL_PROCESS, SCMP_SYS(kexec_load), 0);
-    seccomp_rule_add(ctx, SCMP_ACT_KILL_PROCESS, SCMP_SYS(process_vm_writev), 0);
+    if (seccomp_rule_add(ctx, SCMP_ACT_KILL_PROCESS, SCMP_SYS(kexec_load), 0) != 0 ||
+        seccomp_rule_add(ctx, SCMP_ACT_KILL_PROCESS, SCMP_SYS(process_vm_writev), 0) != 0) {
+        vault_log(LOG_ERROR, "[SECCOMP] Failed to install high-risk kill rules");
+        seccomp_release(ctx);
+        return -1;
+    }
 
     /* ── Apply granular adapter rules from --adapter ─────────────────── */
-    apply_adapter_rules(ctx, g_seccomp_adapter);
+    if (apply_adapter_accept_rules(ctx, g_seccomp_adapter) != 0) {
+        vault_log(LOG_ERROR, "[SECCOMP] Failed to apply adapter accept rules");
+        seccomp_release(ctx);
+        return -1;
+    }
 
     int ret = seccomp_load(ctx);
     if (ret != 0)

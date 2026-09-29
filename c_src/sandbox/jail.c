@@ -99,8 +99,13 @@ static int jail_run_installer(void)
     };
 
     /* Search paths for package manager binaries */
-    const char *pm_paths[] = paths;
-    free(paths);
+    const char *pm_paths[] = {
+        "/usr/bin/apt-get",
+        "/usr/bin/dnf",
+        "/usr/bin/pacman",
+        "/sbin/apk",
+        "/usr/bin/zypper"
+    };
 
 
     for (int i = 0; installers[i][0] != NULL; i++) {
@@ -225,18 +230,61 @@ static int jail_install_shell(const char *vault_path)
             continue;
         }
 
-        /* Check if truly static to warn user */
+        /* Check if truly static: parse ELF program headers for PT_INTERP (type 3).
+         * PT_INTERP is ONLY present in dynamically linked executables.
+         * Searching for "/lib" string is unreliable — static busybox contains it. */
         int is_static = 0;
         {
-            /* Quick heuristic: dynamic ELF has PT_INTERP; open and search
-             * for string "/lib" in first 4 KB of file */
             int probe = open(candidates[i], O_RDONLY | O_CLOEXEC);
             if (probe >= 0) {
-                char head[4096];
-                ssize_t r = read(probe, head, sizeof(head));
+                /* Read ELF header (64-byte for 64-bit, 52-byte for 32-bit) */
+                unsigned char ehdr[64];
+                ssize_t r = read(probe, ehdr, sizeof(ehdr));
+                if (r >= 52 && ehdr[0] == 0x7f && ehdr[1] == 'E' &&
+                    ehdr[2] == 'L' && ehdr[3] == 'F') {
+                    int has_interp = 0;
+                    int bits = ehdr[4]; /* 1=32-bit, 2=64-bit */
+                    uint64_t phoff;
+                    uint16_t phentsize, phnum;
+
+                    if (bits == 2 && r >= 64) {
+                        /* 64-bit ELF */
+                        memcpy(&phoff,     ehdr + 32, 8);
+                        memcpy(&phentsize, ehdr + 54, 2);
+                        memcpy(&phnum,     ehdr + 56, 2);
+                    } else if (bits == 1 && r >= 52) {
+                        /* 32-bit ELF */
+                        uint32_t ph32;
+                        memcpy(&ph32,      ehdr + 28, 4);
+                        phoff = ph32;
+                        memcpy(&phentsize, ehdr + 42, 2);
+                        memcpy(&phnum,     ehdr + 44, 2);
+                    } else {
+                        phnum = 0; phoff = 0; phentsize = 0;
+                    }
+
+                    if (phnum > 0 && phentsize > 0 && phoff > 0) {
+                        lseek(probe, (off_t)phoff, SEEK_SET);
+                        for (uint16_t ph = 0; ph < phnum && ph < 64; ph++) {
+                            uint32_t ptype = 0;
+                            unsigned char phbuf[8];
+                            if (read(probe, phbuf, 4) == 4) {
+                                memcpy(&ptype, phbuf, 4);
+                                if (ptype == 3) { /* PT_INTERP */
+                                    has_interp = 1;
+                                    break;
+                                }
+                                /* Skip remainder of this entry */
+                                lseek(probe, phentsize - 4, SEEK_CUR);
+                            } else break;
+                        }
+                    }
+                    is_static = !has_interp;
+                } else {
+                    /* Not an ELF or too short — assume not static */
+                    is_static = 0;
+                }
                 close(probe);
-                /* If no interpreter path found, it is static */
-                is_static = (r > 0 && memmem(head, (size_t)r, "/lib", 4) == NULL);
             }
         }
 
@@ -386,6 +434,17 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
         }
     }
 
+    /* ── Always ensure /bin/sh is present — same "always ensure" logic as
+     * /dev/null above. If a previous run failed to install shell (e.g. due to
+     * a bad ELF heuristic), we must retry regardless of the marker. ── */
+    {
+        char bin_dir[VAULT_PATH_MAX];
+        snprintf(bin_dir, sizeof(bin_dir), "%s/bin", vault_path);
+        if (mkdir(bin_dir, 0755) != 0 && errno != EEXIST)
+            vault_log(LOG_WARN, "[SANDBOX] mkdir bin: %s", strerror(errno));
+    }
+    jail_install_shell(vault_path);
+
     if (stat(marker, &st) == 0)
         return;
 
@@ -415,13 +474,11 @@ static void vault_prepare_jail(const char *vault_path, bool gui_mode)
         }
     }
 
-    /* ── Ensures /bin/sh inside jail (auto-installs if needed) ── */
-    jail_install_shell(vault_path);
-
     int fd = open(marker, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0400);
     if (fd >= 0)
     {
-        write(fd, "Nuk4sd Jail v2\n", 18);
+        const char msg[] = "Nuk4sd Jail v2\n";
+        (void)write(fd, msg, sizeof(msg) - 1);
         close(fd);
     }
     else

@@ -18,7 +18,7 @@ typedef struct {
     BindType type;
 } BindEntry;
 
-typedef struct {
+typedef struct CliConfig {
     /* --vault <id> */
     int32_t vault_id;
 
@@ -92,6 +92,8 @@ typedef struct {
     int        iso_dev_level;    /* --dev minimal(1)/standard(2)   */
     bool       iso_mount_dev;    /* --mount-dev: bind /dev /dev/pts /sys */
     bool       iso_no_seccomp;   /* --no-seccomp: debug/no BPF     */
+    bool       iso_no_landlock;  /* --no-landlock: compat, no-op (Landlock off by default since v0.9.32) */
+    bool       iso_landlock;     /* --landlock: opt-in VFS MAC (off by default since v0.9.32) */
     bool       iso_use_chroot;   /* --chroot: use chroot instead of pivot_root */
     char      *iso_display;      /* --display :N                   */
     char      *iso_wayland_disp; /* --wayland-display <name>       */

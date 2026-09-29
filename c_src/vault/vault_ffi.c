@@ -342,6 +342,16 @@ int vault_decrypt_ffi(uint32_t id, const char *password) {
         return (int)auth_err;
     }
 
+    /* FIX [Finding 20]: Check WORM flags before direct file transformation.
+     * Protected-scan or WORM_PROTECT_WRITE / WORM_PROTECT_DELETE forbids writing plaintext or deleting encrypted input. */
+    if (worm_check(v, WORM_PROTECT_WRITE) || worm_check(v, WORM_PROTECT_DELETE) || (v->worm_flags & WORM_PROTECT_SCAN)) {
+        vault_log(LOG_ERROR, "[FFI] vault_decrypt_ffi: vault '%s' has active WORM / protected-scan policy — refusing decryption", v->name);
+#ifdef __linux__
+        pthread_mutex_unlock(&g_monitor.lock);
+#endif
+        return (int)ERR_PERM_DENIED;
+    }
+
     uint8_t key[KEY_LEN];
     VaultErrorr key_err = derive_key_for(password, v->salt, "file-encryption", key);
     if (key_err != ERR_OK) {

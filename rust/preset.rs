@@ -128,6 +128,8 @@ pub struct CliConfig {
     pub iso_dev_level: c_int,
     pub iso_mount_dev: bool,
     pub iso_no_seccomp: bool,
+    pub iso_no_landlock: bool,
+    pub iso_landlock: bool,
     pub iso_use_chroot: bool,
     pub iso_display: *mut c_char,
     pub iso_wayland_disp: *mut c_char,
@@ -632,7 +634,10 @@ pub unsafe extern "C" fn preflight_scan(cfg: *mut CliConfig, exec_path: *const c
             cfg.iso_wayland = true;
             cfg.iso_x11     = true;
         }
-        cfg.iso_dbus_session = true;
+        // FIX [Finding 12]: Do not enable session D-Bus if user explicitly requested --no-dbus
+        if !cfg.iso_no_dbus {
+            cfg.iso_dbus_session = true;
+        }
         cfg.iso_dev_level    = 2;
     }
 

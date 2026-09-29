@@ -418,6 +418,20 @@ VaultErrorr auth_verify_password(Vault *v, const char *password)
         return ERR_PASS_REQUIRED;
     }
 
+    /* FIX [Finding 4/18 – CWE-307]: Enforce lockout BEFORE any password
+     * comparison.  Proceeding with the comparison after lockout allowed a
+     * correct guess to reset failed_attempts and bypass the attempt limit.
+     * Now the function returns ERR_VAULT_LOCKED immediately, regardless of
+     * whether the supplied password would have matched. */
+    if (v->status == VAULT_STATUS_LOCKED)
+    {
+        vault_log(LOG_ALERT,
+                  "Auth DENIED for vault '%s': vault is LOCKED after %d failed attempts. "
+                  "Use the unlock recovery path.",
+                  v->name, v->failed_attempts);
+        return ERR_VAULT_LOCKED;
+    }
+
     uint8_t key[KEY_LEN];
     VaultErrorr err = derive_key_for(password, v->salt, "auth-verify", key);
     if (err != ERR_OK)
@@ -546,13 +560,41 @@ VaultErrorr decrypt_file(const char *inpath, const char *outpath,
                         const uint8_t key[KEY_LEN])
 {
     FILE *fin = fopen(inpath, "rb");
-    FILE *fout = fopen(outpath, "wb");
+    if (!fin)
+    {
+        return ERR_IO;
+    }
+
+    /* FIX [Finding 7 – CWE-59]: Do not open/truncate outpath before authentication.
+     * Ensure outpath is not a symlink, decrypt into a private temporary file with
+     * O_NOFOLLOW and mode 0600, and atomically rename only after authentication succeeds. */
+    struct stat out_st;
+    if (lstat(outpath, &out_st) == 0 && S_ISLNK(out_st.st_mode))
+    {
+        vault_log(LOG_ERROR, "decrypt_file: output path '%s' is a symlink — refusing", outpath);
+        fclose(fin);
+        return ERR_IO;
+    }
+
+    char tmppath[PATH_MAX];
+    snprintf(tmppath, sizeof(tmppath), "%s.tmp.%d", outpath, (int)getpid());
+    int out_fd = open(tmppath, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (out_fd < 0)
+    {
+        vault_log(LOG_ERROR, "decrypt_file: failed to create private temp output file: %s", strerror(errno));
+        fclose(fin);
+        return ERR_IO;
+    }
+    FILE *fout = fdopen(out_fd, "wb");
+
     VaultErrorr ret = ERR_OK;
     EVP_CIPHER_CTX *ctx = NULL;
     uint8_t *filebuf = NULL;
 
-    if (!fin || !fout)
+    if (!fout)
     {
+        close(out_fd);
+        unlink(tmppath);
         ret = ERR_IO;
         goto cleanup;
     }
@@ -564,6 +606,20 @@ VaultErrorr decrypt_file(const char *inpath, const char *outpath,
     if (fsize < (long)(GCM_IV_LEN + GCM_TAG_LEN))
     {
         vault_log(LOG_ERROR, "decrypt_file: file too small");
+        ret = ERR_IO;
+        goto cleanup;
+    }
+
+    /* FIX [Finding 19 – CWE-400]: Cap allocation at a sane maximum (512 MiB)
+     * to prevent a sparse .enc file with a huge logical length from causing
+     * OOM or excessive I/O on the victim.  Adjust MAX_DECRYPT_SIZE if your
+     * threat model requires larger files, but always keep an explicit bound. */
+#define MAX_DECRYPT_SIZE (512L * 1024 * 1024)
+    if (fsize > MAX_DECRYPT_SIZE)
+    {
+        vault_log(LOG_ERROR,
+                  "decrypt_file: ciphertext exceeds maximum allowed size (%ld bytes > %ld)",
+                  fsize, MAX_DECRYPT_SIZE);
         ret = ERR_IO;
         goto cleanup;
     }
@@ -653,8 +709,82 @@ cleanup:
     if (fout)
     {
         fclose(fout);
-        if (ret != ERR_OK)
-            unlink(outpath);
+        if (ret == ERR_OK)
+        {
+            /* Double-check destination is not a symlink before renaming */
+            if (lstat(outpath, &out_st) == 0 && S_ISLNK(out_st.st_mode))
+            {
+                unlink(tmppath);
+                ret = ERR_IO;
+            }
+            else if (rename(tmppath, outpath) != 0)
+            {
+                unlink(tmppath);
+                ret = ERR_IO;
+            }
+        }
+        else
+        {
+            unlink(tmppath);
+        }
     }
     return ret;
+}
+
+/* FIX [Finding 1 - CWE-320]: Re-encrypt all existing .enc files with new key before password change */
+VaultErrorr rekey_vault_files(const Vault *v, const uint8_t old_key[KEY_LEN], const uint8_t new_key[KEY_LEN])
+{
+#ifdef __linux__
+    DIR *dir = opendir(v->path);
+    if (!dir)
+        return ERR_OK;
+
+    struct dirent *de;
+    char inpath[VAULT_PATH_MAX + NAME_MAX + 2];
+    char tmppath[VAULT_PATH_MAX + NAME_MAX + 2];
+    char reencpath[VAULT_PATH_MAX + NAME_MAX + 2];
+
+    while ((de = readdir(dir)) != NULL)
+    {
+        size_t nlen = strlen(de->d_name);
+        if (nlen <= 4 || strcmp(de->d_name + nlen - 4, ".enc") != 0)
+            continue;
+
+        snprintf(inpath, sizeof(inpath), "%s/%s", v->path, de->d_name);
+        snprintf(tmppath, sizeof(tmppath), "%s/%s.rekey_tmp_%d", v->path, de->d_name, (int)getpid());
+        snprintf(reencpath, sizeof(reencpath), "%s/%s.rekey_new_%d", v->path, de->d_name, (int)getpid());
+
+        struct stat st;
+        if (lstat(inpath, &st) != 0 || !S_ISREG(st.st_mode) || S_ISLNK(st.st_mode))
+            continue;
+
+        if (decrypt_file(inpath, tmppath, old_key) != ERR_OK)
+        {
+            vault_log(LOG_ERROR, "rekey_vault_files: failed to decrypt '%s' with old key", inpath);
+            unlink(tmppath);
+            closedir(dir);
+            return ERR_CRYPTO;
+        }
+
+        if (encrypt_file(tmppath, reencpath, new_key) != ERR_OK)
+        {
+            vault_log(LOG_ERROR, "rekey_vault_files: failed to re-encrypt '%s' with new key", inpath);
+            unlink(tmppath);
+            unlink(reencpath);
+            closedir(dir);
+            return ERR_CRYPTO;
+        }
+
+        unlink(tmppath);
+        if (rename(reencpath, inpath) != 0)
+        {
+            unlink(reencpath);
+            closedir(dir);
+            return ERR_IO;
+        }
+        vault_log(LOG_AUDIT, "rekey_vault_files: successfully re-keyed '%s'", de->d_name);
+    }
+    closedir(dir);
+#endif
+    return ERR_OK;
 }

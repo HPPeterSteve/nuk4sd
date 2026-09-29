@@ -220,13 +220,17 @@ void vault_enforce_readonly(Vault *v)
         return;
 
     struct dirent *de;
-    char filepath[VAULT_PATH_MAX + NAME_MAX + 2];
     while ((de = readdir(dir)) != NULL)
     {
         if (de->d_name[0] == '.')
             continue;
-        snprintf(filepath, sizeof(filepath), "%s/%s", v->path, de->d_name);
-        chmod(filepath, 0400); // Read-only for owner, none for others
+        /* FIX [Finding 22]: Do NOT follow symlinks; only adjust permissions on regular files */
+        struct stat st;
+        if (fstatat(dirfd(dir), de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+            continue;
+        if (S_ISLNK(st.st_mode) || !S_ISREG(st.st_mode))
+            continue;
+        fchmodat(dirfd(dir), de->d_name, 0400, 0); // Read-only for owner, none for others
     }
     closedir(dir);
     v->write_mode = false;
@@ -245,13 +249,17 @@ void vault_set_write_mode(Vault *v, bool enable)
         return;
 
     struct dirent *de;
-    char filepath[VAULT_PATH_MAX + NAME_MAX + 2];
     while ((de = readdir(dir)) != NULL)
     {
         if (de->d_name[0] == '.')
             continue;
-        snprintf(filepath, sizeof(filepath), "%s/%s", v->path, de->d_name);
-        chmod(filepath, enable ? 0600 : 0400);
+        /* FIX [Finding 22]: Do NOT follow symlinks; only adjust permissions on regular files */
+        struct stat st;
+        if (fstatat(dirfd(dir), de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+            continue;
+        if (S_ISLNK(st.st_mode) || !S_ISREG(st.st_mode))
+            continue;
+        fchmodat(dirfd(dir), de->d_name, enable ? 0600 : 0400, 0);
     }
     closedir(dir);
     v->write_mode = enable;
@@ -265,6 +273,7 @@ void monitor_scan_vault(Vault *v)
         return;
 
 #ifdef __linux__
+    time_t scan_start = time(NULL);
     DIR *dir = opendir(v->path);
     if (!dir)
     {
@@ -301,7 +310,7 @@ void monitor_scan_vault(Vault *v)
             if (e)
             {
                 memcpy(e->hash, new_hash, HASH_HEX_LEN);
-                e->last_seen = time(NULL);
+                e->last_seen = scan_start;
                 e->modified = false;
                 vault_log(LOG_INFO, "[%s] New file registered: %s", v->name, de->d_name);
             }
@@ -324,11 +333,32 @@ void monitor_scan_vault(Vault *v)
             {
                 e->modified = false;
             }
-            e->last_seen = time(NULL);
+            e->last_seen = scan_start;
         }
     }
 
     closedir(dir);
+
+    /* FIX [Finding 23]: Detect deleted / missing tracked files */
+    for (size_t b = 0; b < HASHMAP_BUCKETS; b++)
+    {
+        FileEntry *e = v->hashmap.buckets[b];
+        while (e)
+        {
+            if (e->last_seen < scan_start)
+            {
+                if (!e->modified)
+                {
+                    e->modified = true;
+                    vault_log(LOG_ALERT, "[%s] Tracked file MISSING / DELETED: %s", v->name, e->filename);
+                    char reason[256];
+                    snprintf(reason, sizeof(reason), "Tracked file missing/deleted: %s", e->filename);
+                    alert_trigger(v, reason);
+                }
+            }
+            e = e->next;
+        }
+    }
 #endif /* __linux__ */
 
     v->last_check = time(NULL);

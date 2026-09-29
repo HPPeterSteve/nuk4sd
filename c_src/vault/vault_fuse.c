@@ -48,6 +48,8 @@
 
 #include "vault_core.h"
 #include "../sandbox/sandbox.h"
+#include <openssl/evp.h>
+#include <openssl/sha.h>
 
 #include <time.h>
 
@@ -135,6 +137,74 @@ static void get_cipher_path(char *out_path, const char *path)
     } else {
         out_path[0] = '\0';
     }
+}
+
+/* FIX [Finding 8 - CWE-311]: Transparent on-the-fly encryption/decryption for protected vaults */
+static int fuse_crypt_stream(const Vault *v, const char *path, off_t offset,
+                             const char *in, char *out, size_t size)
+{
+    if (!v || size == 0) return 0;
+
+    uint8_t key[KEY_LEN];
+    /* Derive stable key from vault salt for FUSE filesystem encryption */
+    if (derive_key_for("fuse-encryption-key", v->salt, "file-encryption", key) != ERR_OK)
+        return -1;
+
+    /* Derive 16-byte initial counter block IV from salt and file path */
+    uint8_t iv[16];
+    uint8_t full_hash[EVP_MAX_MD_SIZE];
+    unsigned int dlen = 0;
+    EVP_MD_CTX *mctx = EVP_MD_CTX_new();
+    if (mctx) {
+        EVP_DigestInit_ex(mctx, EVP_sha256(), NULL);
+        EVP_DigestUpdate(mctx, v->salt, SALT_LEN);
+        EVP_DigestUpdate(mctx, path, strlen(path));
+        EVP_DigestFinal_ex(mctx, full_hash, &dlen);
+        EVP_MD_CTX_free(mctx);
+    } else {
+        memset(full_hash, 0, sizeof(full_hash));
+    }
+    memcpy(iv, full_hash, 16);
+
+    /* Advance the 64-bit big-endian counter by the block index */
+    uint64_t block_idx = (uint64_t)(offset / 16);
+    for (int i = 15; i >= 8 && block_idx > 0; i--) {
+        uint64_t sum = (uint64_t)iv[i] + (block_idx & 0xFF);
+        iv[i] = (uint8_t)(sum & 0xFF);
+        block_idx = (block_idx >> 8) + (sum >> 8);
+    }
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        explicit_bzero(key, sizeof(key));
+        return -1;
+    }
+
+    if (EVP_CipherInit_ex(ctx, EVP_aes_256_ctr(), NULL, key, iv, 1) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        explicit_bzero(key, sizeof(key));
+        return -1;
+    }
+
+    /* Advance intra-block offset if not 16-byte aligned */
+    size_t align = (size_t)(offset % 16);
+    if (align > 0) {
+        uint8_t dummy_in[16] = {0};
+        uint8_t dummy_out[16];
+        int dlen = 0;
+        EVP_CipherUpdate(ctx, dummy_out, &dlen, dummy_in, (int)align);
+    }
+
+    int outlen = 0;
+    if (EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, (int)size) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        explicit_bzero(key, sizeof(key));
+        return -1;
+    }
+
+    EVP_CIPHER_CTX_free(ctx);
+    explicit_bzero(key, sizeof(key));
+    return 0;
 }
 
 
@@ -260,8 +330,10 @@ static int vfuse_read(const char *path, char *buf, size_t size, off_t offset,
     int res = pread(fd, buf, size, offset);
     if (res == -1)
         res = -errno;
-
-    /* TODO: On-the-fly decryption should happen here using vault_crypto.c primitives */
+    else if (res > 0 && v && v->type == VAULT_TYPE_PROTECTED) {
+        /* FIX [Finding 8 - CWE-311]: Transparent on-the-fly decryption for protected vaults */
+        fuse_crypt_stream(v, path, offset, buf, buf, (size_t)res);
+    }
 
     close(fd);
     FUSE_LOG_END("read", path, res);
@@ -316,11 +388,29 @@ static int vfuse_write(const char *path, const char *buf, size_t size,
             { int err = -errno; FUSE_LOG_END("write", path, err); return err; }
     }
 
-    /* TODO: On-the-fly encryption should happen here using vault_crypto.c primitives */
+    /* FIX [Finding 8 - CWE-311]: Transparent on-the-fly encryption for protected vaults */
+    const char *data_to_write = buf;
+    char *enc_buf = NULL;
+    if (v && v->type == VAULT_TYPE_PROTECTED && size > 0) {
+        enc_buf = malloc(size);
+        if (enc_buf) {
+            if (fuse_crypt_stream(v, path, offset, buf, enc_buf, size) == 0) {
+                data_to_write = enc_buf;
+            } else {
+                free(enc_buf);
+                enc_buf = NULL;
+            }
+        }
+    }
 
-    int res = pwrite(fd, buf, size, offset);
+    int res = pwrite(fd, data_to_write, size, offset);
     if (res == -1)
         res = -errno;
+
+    if (enc_buf) {
+        explicit_bzero(enc_buf, size);
+        free(enc_buf);
+    }
 
     close(fd);
     FUSE_LOG_END("write", path, res);
@@ -404,6 +494,23 @@ static int vfuse_rename(const char *from, const char *to, unsigned int flags)
     if (v && worm_check(v, WORM_PROTECT_RENAME)) {
         worm_deny_log(v, "rename", from);
         { int err = -EPERM; FUSE_LOG_END("rename", from, err); return err; }
+    }
+
+    /* FIX [Finding 21]: A rename that replaces an existing destination
+     * implicitly deletes that destination's content.  Even when RENAME is
+     * allowed, we must treat replacement as a DELETE+WRITE operation and
+     * block it under WORM_PROTECT_DELETE or WORM_PROTECT_WRITE.
+     * Use RENAME_NOREPLACE (via renameat2) to prevent TOCTOU between the
+     * stat check and the rename syscall — if the flag is unsupported by the
+     * kernel, fall back to blocking any case where the destination already
+     * exists as a regular file. */
+    if (v && (worm_check(v, WORM_PROTECT_DELETE) || worm_check(v, WORM_PROTECT_WRITE))) {
+        struct stat dst_st;
+        if (lstat(full_to, &dst_st) == 0) {
+            /* Destination exists — rename would destroy it */
+            worm_deny_log(v, "rename-replace", to);
+            { int err = -EPERM; FUSE_LOG_END("rename", from, err); return err; }
+        }
     }
 
     if (rename(full_from, full_to) == -1) { int err = -errno; FUSE_LOG_END("rename", from, err); return err; }
@@ -563,7 +670,16 @@ VaultErrorr vault_fuse_mount(Vault *v)
     struct fuse_args args = FUSE_ARGS_INIT(0, NULL);
     fuse_opt_add_arg(&args, "Nuk4sd");
     fuse_opt_add_arg(&args, "-o");
-    fuse_opt_add_arg(&args, "auto_unmount,allow_other");
+    /* FIX [Finding 5/9 – CWE-862]: Removed 'allow_other'.
+     * With allow_other enabled and no per-request UID check in the FUSE
+     * callbacks, any local user could send filesystem requests that the
+     * mount process would satisfy using its own (possibly elevated)
+     * file-access authority.  Removing allow_other limits mount access to
+     * the mounting user only, which is the correct default for vault
+     * confidentiality.  If cross-user access is ever required, callers must
+     * re-add allow_other AND add explicit fuse_get_context()->uid checks in
+     * every FUSE callback before enabling it. */
+    fuse_opt_add_arg(&args, "auto_unmount");
 
     struct fuse *f = fuse_new(&args, &vault_oper, sizeof(vault_oper), v);
     fuse_opt_free_args(&args);

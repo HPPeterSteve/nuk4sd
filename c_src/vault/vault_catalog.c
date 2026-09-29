@@ -500,10 +500,35 @@ VaultErrorr vault_create(const char *name_arg, VaultType type,
     }
 
     /* Create virtual mount directory */
-    if (mkdir(path_buf, 0700) != 0 && errno != EEXIST)
+    if (mkdir(path_buf, 0700) != 0)
     {
-        vault_log(LOG_ERROR, "mkdir '%s' failed: %s", path_buf, strerror(errno));
-        return ERR_IO;
+        if (errno == EEXIST)
+        {
+            /* FIX [Finding 22]: Verify ownership, symlink status and permissions of existing directory */
+            struct stat dir_st;
+            if (lstat(path_buf, &dir_st) != 0 || !S_ISDIR(dir_st.st_mode) || S_ISLNK(dir_st.st_mode))
+            {
+                vault_log(LOG_ERROR, "vault_create: existing path '%s' is not a normal directory", path_buf);
+                return ERR_PATH_INVALID;
+            }
+            if (dir_st.st_uid != getuid())
+            {
+                vault_log(LOG_ERROR, "vault_create: existing directory '%s' is not owned by current user (uid %u != %u)",
+                          path_buf, (unsigned)dir_st.st_uid, (unsigned)getuid());
+                return ERR_PERM_DENIED;
+            }
+            if (dir_st.st_mode & 0022)
+            {
+                vault_log(LOG_ERROR, "vault_create: existing directory '%s' has unsafe group/other write permissions (0%o)",
+                          path_buf, (unsigned)(dir_st.st_mode & 0777));
+                return ERR_PERM_DENIED;
+            }
+        }
+        else
+        {
+            vault_log(LOG_ERROR, "mkdir '%s' failed: %s", path_buf, strerror(errno));
+            return ERR_IO;
+        }
     }
 
     Vault *v = &g_catalog.vaults[g_catalog.count];
@@ -684,10 +709,46 @@ VaultErrorr vault_change_password(uint32_t id, const char *old_pass,
     if (err != ERR_OK)
         return err;
 
-    err = auth_set_password(v, new_pass);
+    /* FIX [Finding 1 - CWE-320]: Re-encrypt existing files before replacing salt */
+    uint8_t old_key[KEY_LEN];
+    err = derive_key_for(old_pass, v->salt, "file-encryption", old_key);
     if (err != ERR_OK)
         return err;
 
-    vault_log(LOG_AUDIT, "Password CHANGED for vault '%s'", v->name);
+    uint8_t new_salt[SALT_LEN];
+    if (RAND_bytes(new_salt, SALT_LEN) != 1)
+    {
+        explicit_bzero(old_key, KEY_LEN);
+        return ERR_CRYPTO;
+    }
+
+    uint8_t new_key[KEY_LEN];
+    err = derive_key_for(new_pass, new_salt, "file-encryption", new_key);
+    if (err != ERR_OK)
+    {
+        explicit_bzero(old_key, KEY_LEN);
+        return err;
+    }
+
+    /* Re-encrypt all existing .enc files with the new key */
+    err = rekey_vault_files(v, old_key, new_key);
+    explicit_bzero(old_key, KEY_LEN);
+    explicit_bzero(new_key, KEY_LEN);
+    if (err != ERR_OK)
+    {
+        vault_log(LOG_ERROR, "vault_change_password: rekeying files failed; aborting to preserve data");
+        return err;
+    }
+
+    /* Now that all files are re-keyed, commit new salt and password verify hash */
+    memcpy(v->salt, new_salt, SALT_LEN);
+    uint8_t pass_verify_key[KEY_LEN];
+    err = derive_key_for(new_pass, v->salt, "auth-verify", pass_verify_key);
+    if (err != ERR_OK)
+        return err;
+    memcpy(v->pass_hash, pass_verify_key, SHA256_DIGEST_LENGTH);
+    explicit_bzero(pass_verify_key, KEY_LEN);
+
+    vault_log(LOG_AUDIT, "Password CHANGED and files re-keyed for vault '%s'", v->name);
     return catalog_save();
 }

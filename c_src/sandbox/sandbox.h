@@ -25,6 +25,7 @@
  */
 
 #include "vault_core.h"
+#include "preset.h"
 
 #ifdef __linux__
 #include <sys/sysmacros.h>

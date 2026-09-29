@@ -97,6 +97,22 @@ fn copy_file_secure(src: &Path, dst: &Path, replace: bool, preserve: bool) -> Re
         ));
     }
 
+    // FIX [Finding 28 – CWE-59]: Reject the copy if the DESTINATION is a symlink
+    // (including dangling symlinks whose target does not yet exist).
+    // safe_vault_path only guards the existence-check path; a dangling symlink at
+    // the destination passes that check, allowing fs::copy to follow it and write
+    // outside the vault.  Using symlink_metadata (which does not follow symlinks)
+    // detects the symlink before any write takes place.
+    if let Ok(dst_meta) = fs::symlink_metadata(dst) {
+        if dst_meta.file_type().is_symlink() {
+            return Err(format!(
+                "Security violation: destination '{}' is a symlink. \
+                 Refusing to copy to prevent writing outside the vault.",
+                dst.display()
+            ));
+        }
+    }
+
     // Reject copying if source is a dangling or unsafe symlink
     let src_meta = fs::symlink_metadata(src)
         .map_err(|e| format!("Cannot read metadata of '{}': {}", src.display(), e))?;
@@ -348,6 +364,41 @@ pub fn vault_mkdir(vault_path: &str, dir_rel: &str) -> Result<(), String> {
         return Err(format!("Directory '{}' already exists.", dir_rel));
     }
 
+    // FIX [Finding 29 – CWE-59]: fs::create_dir_all follows symlinks at each
+    // path component during directory creation, so a pre-existing symlink in an
+    // ancestor can redirect creation outside the vault even after safe_vault_path
+    // validates the non-existent terminal component.
+    // We walk every existing ancestor and reject any component that is a symlink.
+    let canonical_root = vroot.canonicalize()
+        .map_err(|e| format!("Cannot resolve vault root '{}': {}", vault_path, e))?;
+    let mut cur = vroot.to_path_buf();
+    for comp in Path::new(dir_rel).components() {
+        match comp {
+            std::path::Component::Normal(c) => cur.push(c),
+            _ => continue,
+        }
+        if cur.exists() {
+            if let Ok(meta) = fs::symlink_metadata(&cur) {
+                if meta.file_type().is_symlink() {
+                    return Err(format!(
+                        "Security violation: path component '{}' is a symlink. \
+                         Refusing to create directories through a symlink.",
+                        cur.display()
+                    ));
+                }
+            }
+            // Verify this existing ancestor is still inside the vault root
+            if let Ok(canon) = cur.canonicalize() {
+                if !canon.starts_with(&canonical_root) {
+                    return Err(format!(
+                        "Security violation: path '{}' resolves outside vault root",
+                        cur.display()
+                    ));
+                }
+            }
+        }
+    }
+
     fs::create_dir_all(&target).map_err(|e| {
         format!("Failed to create directory '{}': {}", dir_rel, e)
     })?;
@@ -575,6 +626,12 @@ fn sanitize_tag(tag: &str) -> Result<String, String> {
     if clean.is_empty() {
         return Err("Snapshot tag cannot be empty.".to_string());
     }
+    // FIX [Finding 13]: Explicitly reject "." — it passes the ".." check below
+    // but join(".vault_snapshots", ".") resolves to the snapshot directory itself.
+    // Deleting that path recursively removes ALL snapshots, not just one named tag.
+    if clean == "." {
+        return Err("Invalid snapshot tag: '.' is forbidden (would target snapshot directory itself).".to_string());
+    }
     for c in clean.chars() {
         if !c.is_alphanumeric() && c != '_' && c != '-' && c != '.' {
             return Err(format!(
@@ -764,10 +821,37 @@ pub fn vault_snapshot_restore(vault_path: &str, tag_str: &str) -> Result<(), Str
         return Err(format!("Snapshot '{}' does not exist or has no data.", tag));
     }
 
-    // 1. Remove existing vault items (except .vault_snapshots)
+    // FIX [Finding 14]: The original code removed existing vault entries BEFORE
+    // verifying that the snapshot data directory is readable and complete.
+    // A malformed snapshot (e.g. an archive that stores "data" as a regular file
+    // instead of a directory) would make the copy fail after the data was already
+    // deleted, leaving the vault empty.
+    //
+    // Safe approach:
+    //   1. Verify snap_data is an actual readable directory.
+    //   2. Stage it into a temporary location inside the vault (atomic copy).
+    //   3. Only then remove existing entries and move the staged data into place.
+    if !snap_data.is_dir() {
+        return Err(format!(
+            "Snapshot '{}' data is not a readable directory. Refusing to restore to avoid data loss.",
+            tag
+        ));
+    }
+
+    // Stage: copy snapshot data to a temporary directory adjacent to the vault
+    let stage_dir = vroot.join(".vault_restore_stage");
+    if stage_dir.exists() {
+        fs::remove_dir_all(&stage_dir)
+            .map_err(|e| format!("Cannot remove stale staging directory: {}", e))?;
+    }
+    copy_dir_all(&snap_data, &stage_dir, true, true)
+        .map_err(|e| format!("Staging snapshot '{}' failed — vault unchanged: {}", tag, e))?;
+
+    // Only now remove existing vault items (except .vault_snapshots)
     for entry in fs::read_dir(vroot).map_err(|e| format!("Cannot read '{}': {}", vault_path, e))? {
         let entry = entry.map_err(|e| format!("Error: {}", e))?;
-        if entry.file_name() == ".vault_snapshots" {
+        let name = entry.file_name();
+        if name == ".vault_snapshots" || name == ".vault_restore_stage" {
             continue;
         }
         let p = entry.path();
@@ -778,8 +862,9 @@ pub fn vault_snapshot_restore(vault_path: &str, tag_str: &str) -> Result<(), Str
         }
     }
 
-    // 2. Copy snapshot data into vault root
-    copy_dir_all(&snap_data, vroot, true, true)?;
+    // Move staged data into the vault root
+    copy_dir_all(&stage_dir, vroot, true, true)?;
+    let _ = fs::remove_dir_all(&stage_dir);
 
     println!("✔ Vault successfully restored to snapshot '\x1b[1;32m{}\x1b[0m'.", tag);
     Ok(())
@@ -979,6 +1064,29 @@ pub fn vault_hash(vault_path: &str, target_rel: Option<&str>) -> Result<(), Stri
     Ok(())
 }
 
+/// Derives a host-specific HMAC key for baseline authentication
+fn get_baseline_auth_key() -> Vec<u8> {
+    let machine_id = fs::read_to_string("/etc/machine-id")
+        .or_else(|_| fs::read_to_string("/var/lib/dbus/machine-id"))
+        .unwrap_or_else(|_| "nuk4sd_fallback_machine_key".to_string());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let mut hasher = Sha256::new();
+    hasher.update(b"NUK4SD_BASELINE_AUTH_KEY_V1:");
+    hasher.update(machine_id.trim().as_bytes());
+    hasher.update(b":");
+    hasher.update(home.trim().as_bytes());
+    hasher.finalize().to_vec()
+}
+
+fn compute_baseline_hmac(manifest_body: &str) -> String {
+    let key = get_baseline_auth_key();
+    let mut hasher = Sha256::new();
+    hasher.update(&key);
+    hasher.update(manifest_body.as_bytes());
+    hasher.update(&key);
+    hex::encode(hasher.finalize())
+}
+
 /// Generates an authenticated cryptographic baseline (.vault_baseline)
 pub fn vault_baseline(vault_path: &str) -> Result<(), String> {
     let vroot = Path::new(vault_path);
@@ -1022,13 +1130,23 @@ pub fn vault_baseline(vault_path: &str) -> Result<(), String> {
         content.push_str(&format!("{}|{}|{}\n", h, sz, rel));
     }
 
+    // FIX [Finding 31]: Authenticate the baseline with a host HMAC signature
+    let sig = compute_baseline_hmac(&content);
+    content.push_str(&format!("# HMAC_SIG={}\n", sig));
+
     let baseline_file = vroot.join(".vault_baseline");
     fs::write(&baseline_file, content).map_err(|e| {
         format!("Failed to write baseline file '{}': {}", baseline_file.display(), e)
     })?;
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&baseline_file, fs::Permissions::from_mode(0o600));
+    }
+
     println!(
-        "✔ Baseline generated with \x1b[1;32m{}\x1b[0m tracked files (.vault_baseline).",
+        "✔ Authenticated baseline generated with \x1b[1;32m{}\x1b[0m tracked files (.vault_baseline).",
         entries.len()
     );
     log_vault_event(vault_path, "BASELINE", &format!("{} files registered", entries.len()));
@@ -1044,8 +1162,35 @@ pub fn vault_verify(vault_path: &str) -> Result<(), String> {
         return Err("No baseline found (.vault_baseline). Generate one with --baseline first.".to_string());
     }
 
+    let canonical_root = vroot.canonicalize()
+        .map_err(|e| format!("Cannot resolve vault root: {}", e))?;
+
     let content = fs::read_to_string(&baseline_file)
         .map_err(|e| format!("Cannot read baseline file: {}", e))?;
+
+    // FIX [Finding 31]: Verify the cryptographic HMAC signature of .vault_baseline
+    let mut body_lines = Vec::new();
+    let mut expected_sig = None;
+    for line in content.lines() {
+        if let Some(sig) = line.strip_prefix("# HMAC_SIG=") {
+            expected_sig = Some(sig.trim().to_string());
+        } else {
+            body_lines.push(line);
+        }
+    }
+
+    let Some(ref expected_sig) = expected_sig else {
+        return Err("Integrity verification failed: .vault_baseline lacks cryptographic signature.".to_string());
+    };
+
+    let mut body_str = body_lines.join("\n");
+    if !body_str.is_empty() {
+        body_str.push('\n');
+    }
+    let calculated_sig = compute_baseline_hmac(&body_str);
+    if calculated_sig != *expected_sig {
+        return Err("Integrity verification failed: .vault_baseline HMAC signature mismatch (file tampered with or replaced).".to_string());
+    }
 
     let mut baseline_map: BTreeMap<String, (String, u64)> = BTreeMap::new();
     for line in content.lines() {
@@ -1057,19 +1202,62 @@ pub fn vault_verify(vault_path: &str) -> Result<(), String> {
         if parts.len() == 3 {
             let h = parts[0].to_string();
             let sz: u64 = parts[1].parse().unwrap_or(0);
-            let path = parts[2].to_string();
-            baseline_map.insert(path, (h, sz));
+            let path_str = parts[2].to_string();
+
+            // FIX [Finding 30]: Reject absolute paths from the baseline.
+            // An absolute path can select any file on the system, including
+            // non-terminating device streams that stall the hasher indefinitely.
+            // Only relative vault paths are valid baseline entries.
+            if path_str.starts_with('/') {
+                eprintln!(
+                    "  \x1b[33m⚠ [SKIP]\x1b[0m        Baseline entry '{}' has absolute path — skipped (security)",
+                    path_str
+                );
+                continue;
+            }
+
+            baseline_map.insert(path_str, (h, sz));
         }
     }
 
     let mut matched = 0;
     let mut modified = 0;
     let mut missing = 0;
+    // FIX [Finding 15]: Track files found on disk to detect untracked additions.
+    let mut untracked = 0;
 
     println!("\n  ── Vault Integrity Verification [ {} ] ────────────", vault_path);
 
     for (rel, (exp_h, exp_sz)) in &baseline_map {
         let path = vroot.join(rel);
+
+        // FIX [Finding 30 continued]: Verify the path stays inside the vault root
+        // (guards against a compromised baseline with "../" sequences that survived
+        // the absolute-path check above).
+        if path.exists() {
+            if let Ok(canon) = path.canonicalize() {
+                if !canon.starts_with(&canonical_root) {
+                    println!("  \x1b[31m✖ [ESCAPE]\x1b[0m      {} (path escapes vault root — skipped)", rel);
+                    modified += 1;
+                    continue;
+                }
+            }
+            // FIX [Finding 30]: Only hash regular files; reject device nodes, FIFOs, etc.
+            match fs::metadata(&path) {
+                Ok(meta) if !meta.is_file() => {
+                    println!("  \x1b[31m✖ [INVALID]\x1b[0m     {} (not a regular file — skipped)", rel);
+                    modified += 1;
+                    continue;
+                }
+                Err(e) => {
+                    println!("  \x1b[31m✖ [ERROR]\x1b[0m       {} (cannot stat: {})", rel, e);
+                    modified += 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
         if !path.exists() {
             println!("  \x1b[31m✖ [MISSING]\x1b[0m     {}", rel);
             missing += 1;
@@ -1089,21 +1277,59 @@ pub fn vault_verify(vault_path: &str) -> Result<(), String> {
         }
     }
 
+    // FIX [Finding 15]: Enumerate current vault files and report any that are
+    // absent from the baseline.  The original code only checked baseline entries
+    // against the filesystem, so files added after baseline creation were silently
+    // ignored, producing a false-positive "all OK" result.
+    fn walk_for_untracked(
+        dir: &Path,
+        vroot: &Path,
+        baseline: &BTreeMap<String, (String, u64)>,
+        count: &mut usize,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(dir).map_err(|e| format!("Cannot read '{}': {}", dir.display(), e))? {
+            let entry = entry.map_err(|e| format!("Error: {}", e))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(".vault") {
+                continue;
+            }
+            let p = entry.path();
+            let ft = entry.file_type().map_err(|e| format!("Error: {}", e))?;
+            if ft.is_dir() {
+                walk_for_untracked(&p, vroot, baseline, count)?;
+            } else if ft.is_file() {
+                let rel = p.strip_prefix(vroot).unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !baseline.contains_key(&rel) {
+                    println!("  \x1b[33m⚠ [UNTRACKED]\x1b[0m   {}", rel);
+                    *count += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+    walk_for_untracked(vroot, vroot, &baseline_map, &mut untracked)?;
+
     println!("  {}", "─".repeat(60));
     println!(
-        "  Result: \x1b[32m{} verified\x1b[0m, \x1b[31m{} modified\x1b[0m, \x1b[31m{} missing\x1b[0m.",
-        matched, modified, missing
+        "  Result: \x1b[32m{} verified\x1b[0m, \x1b[31m{} modified\x1b[0m, \x1b[31m{} missing\x1b[0m, \x1b[33m{} untracked\x1b[0m.",
+        matched, modified, missing, untracked
     );
     println!("  ────────────────────────────────────────────────────────────\n");
 
     log_vault_event(
         vault_path,
         "VERIFY",
-        &format!("matched={}, modified={}, missing={}", matched, modified, missing),
+        &format!("matched={}, modified={}, missing={}, untracked={}", matched, modified, missing, untracked),
     );
 
-    if modified > 0 || missing > 0 {
-        return Err("Integrity check failed: corruptions or missing files detected!".to_string());
+    // FIX [Finding 15 continued]: Untracked additions must also fail verification.
+    if modified > 0 || missing > 0 || untracked > 0 {
+        return Err(format!(
+            "Integrity check failed: {} corrupted, {} missing, {} untracked files detected!",
+            modified, missing, untracked
+        ));
     }
 
     Ok(())
@@ -1296,8 +1522,31 @@ pub fn vault_backup(vault_path: &str, out_archive: Option<&str>) -> Result<Strin
     let out_file_path = out_archive.unwrap_or(&default_name);
     let out_path = Path::new(out_file_path);
 
-    let tar_gz = fs::File::create(out_path)
-        .map_err(|e| format!("Cannot create backup file '{}': {}", out_file_path, e))?;
+    // FIX [Finding 32 – CWE-732]: fs::File::create inherits the process umask,
+    // which under a permissive umask (e.g. 022) makes the archive world-readable.
+    // A backup archive contains confidential vault files, so it must be created
+    // with owner-only permissions (mode 0600) before any vault data is written.
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let tar_gz = {
+        #[cfg(unix)]
+        {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(out_path)
+                .map_err(|e| format!("Cannot create backup file '{}': {}", out_file_path, e))?
+        }
+        #[cfg(not(unix))]
+        {
+            fs::File::create(out_path)
+                .map_err(|e| format!("Cannot create backup file '{}': {}", out_file_path, e))?
+        }
+    };
+
     let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
     let mut tar = tar::Builder::new(enc);
 
@@ -1348,12 +1597,59 @@ pub fn vault_restore(vault_path: &str, in_archive: &str) -> Result<(), String> {
     let dec = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(dec);
 
-    archive.unpack(vroot).map_err(|e| {
-        format!("Failed to unpack backup archive '{}': {}", in_archive, e)
+    // FIX [Finding 33 - CWE-400]: Enforce limits on total extracted entries and expanded bytes
+    // to prevent tar bomb / decompression bomb DoS attacks.
+    const MAX_RESTORE_ENTRIES: usize = 50_000;
+    const MAX_RESTORE_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10 GiB budget
+
+    let entries = archive.entries().map_err(|e| {
+        format!("Failed to read backup archive entries '{}': {}", in_archive, e)
     })?;
 
-    println!("✔ Vault successfully restored from archive '\x1b[1;32m{}\x1b[0m'.", in_archive);
-    log_vault_event(vault_path, "RESTORE", &format!("source archive={}", in_archive));
+    let mut total_entries: usize = 0;
+    let mut total_bytes: u64 = 0;
+
+    for entry_result in entries {
+        let mut entry = entry_result.map_err(|e| {
+            format!("Corrupted entry in backup archive '{}': {}", in_archive, e)
+        })?;
+
+        // FIX [Finding 31]: Never allow an untrusted restored archive to overwrite internal vault metadata (.vault*)
+        if let Ok(entry_path) = entry.path() {
+            let path_str = entry_path.to_string_lossy();
+            if path_str.starts_with(".vault") || path_str.contains("/.vault") {
+                continue;
+            }
+        }
+
+        total_entries += 1;
+        if total_entries > MAX_RESTORE_ENTRIES {
+            return Err(format!(
+                "Restore failed: archive exceeded maximum entry limit ({} entries).",
+                MAX_RESTORE_ENTRIES
+            ));
+        }
+
+        let entry_size = entry.header().size().unwrap_or(0);
+        total_bytes = total_bytes
+            .checked_add(entry_size)
+            .ok_or_else(|| "Integer overflow calculating total archive size".to_string())?;
+
+        if total_bytes > MAX_RESTORE_BYTES {
+            return Err(format!(
+                "Restore failed: archive exceeded maximum expanded byte budget ({} bytes).",
+                MAX_RESTORE_BYTES
+            ));
+        }
+
+        // unpack_in securely confines path extraction within vroot
+        entry.unpack_in(vroot).map_err(|e| {
+            format!("Failed to unpack entry from '{}': {}", in_archive, e)
+        })?;
+    }
+
+    println!("✔ Vault successfully restored from archive '\x1b[1;32m{}\x1b[0m' ({} files, {} bytes).", in_archive, total_entries, total_bytes);
+    log_vault_event(vault_path, "RESTORE", &format!("source archive={}, entries={}, size={}", in_archive, total_entries, total_bytes));
     Ok(())
 }
 
@@ -1484,12 +1780,8 @@ pub fn vault_key_rotate(vault_path: &str, old_pass: &str, new_pass: &str) -> Res
             let ft = entry.file_type().map_err(|e| format!("Error: {}", e))?;
             if ft.is_dir() {
                 walk_rekey(&p, old_p, new_p, count)?;
-            } else if ft.is_file() && fname.ends_with(".enc") {
-                // Decrypt with old, encrypt with new
-                crate::crypto::decrypt_file(&p, old_p).map_err(|e| format!("Decrypt error on '{}': {}", p.display(), e))?;
-                let dec_path = p.with_extension("dec");
-                crate::crypto::encrypt_file(&dec_path, new_p).map_err(|e| format!("Re-encrypt error: {}", e))?;
-                let _ = fs::remove_file(&dec_path);
+                // FIX [Finding 24]: Re-encrypt directly in memory without writing plaintext .dec files to disk
+                crate::crypto::rekey_file(&p, old_p, new_p).map_err(|e| format!("Rekey error on '{}': {}", p.display(), e))?;
                 println!("  \x1b[32m✔ [ROTATED]\x1b[0m     {}", fname);
                 *count += 1;
             }

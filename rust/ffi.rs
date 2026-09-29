@@ -7,6 +7,7 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
+use crate::crypto;
 
 pub const VAULT_PATH_MAX: usize = 512;
 
@@ -247,6 +248,7 @@ pub extern "C" fn rust_oci_pull_image(
 
     let url_raw = unsafe { CStr::from_ptr(url_or_alias) }.to_string_lossy();
     let dir_raw = unsafe { CStr::from_ptr(target_dir) }.to_string_lossy();
+    let target = Path::new(dir_raw.as_ref());
 
     /* Check for bundled or local SquashFS runtime first before downloading */
     if url_raw == "ubuntu" || url_raw == "ubuntu-noble" || url_raw == "default" {
@@ -282,7 +284,6 @@ pub extern "C" fn rust_oci_pull_image(
         other => other, /* raw URL passthrough */
     };
 
-    let target = Path::new(dir_raw.as_ref());
     match pull_and_extract_image(url, target) {
         Ok(()) => 0,
         Err(e) => {

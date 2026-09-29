@@ -31,6 +31,8 @@
 
 #include "sandbox.h"
 #include <errno.h>
+#include <ctype.h>
+#include <arpa/inet.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -264,9 +266,11 @@ int nfilterflag(const char *jail_name, const char *jail_ip) {
         return -1;
     }
 
+    /* FIX [Finding 16]: Use 'inet' table family instead of 'ip' so default-drop
+     * applies to both IPv4 and IPv6 traffic, preventing bypass via IPv6. */
     int buffer_length = snprintf(nft_commands_buffer, sizeof(nft_commands_buffer),
-                                 "add table ip %s\n"
-                                 "add chain ip %s output { type filter hook output priority 0; policy drop; }\n",
+                                 "add table inet %s\n"
+                                 "add chain inet %s output { type filter hook output priority 0; policy drop; }\n",
                                  jail_name, jail_name);
 
     /* Add rule allowing traffic to whitelisted IPs */
@@ -276,8 +280,10 @@ int nfilterflag(const char *jail_name, const char *jail_ip) {
             nft_ctx_free(nft_context);
             return -1;
         }
+        const char *addr = nf.allowed_ips[ip_index];
+        const char *proto = strchr(addr, ':') ? "ip6" : "ip";
         buffer_length += snprintf(nft_commands_buffer + buffer_length, sizeof(nft_commands_buffer) - buffer_length,
-                                  "add rule ip %s output ip daddr %s accept\n", jail_name, nf.allowed_ips[ip_index]);
+                                  "add rule inet %s output %s daddr %s accept\n", jail_name, proto, addr);
     }
 
     int execution_status = nft_run_cmd_from_buffer(nft_context, nft_commands_buffer);

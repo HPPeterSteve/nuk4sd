@@ -184,7 +184,7 @@ enum {
     OPT_SECCOMP_STRICT = 'q',
     OPT_ALLOW_CLONE3   = 'k',
     /* permissive seccomp */
-    OPT_FRIENDLY_SANDBOX,
+    OPT_FRIENDLY_SANDBOX = 1100,
     /* Phase 2 roadmap: allows GUI app to mount its own internal sandbox */
     OPT_PERMISSIVE_SANDBOX,
     /* Disables dependency auto-scanner (preflight_scan / ldd) */
@@ -1141,6 +1141,8 @@ static void load_profile(CliConfig *cfg, const char *path) {
         else if (!strcmp(p, "--gpu"))               cfg->iso_gpu            = true;
         else if (!strcmp(p, "--xdg-runtime"))       cfg->iso_xdg_runtime    = true;
         else if (!strcmp(p, "--no-seccomp"))        cfg->iso_no_seccomp     = true;
+        else if (!strcmp(p, "--no-landlock"))        cfg->iso_no_landlock    = true; /* no-op: Landlock off by default since v0.9.32 */
+        else if (!strcmp(p, "--landlock"))           cfg->iso_landlock       = true; /* opt-in: enable Landlock VFS MAC */
         else if (!strcmp(p, "--seccomp-strict") || !strcmp(p, "-q")) cfg->seccomp_strict = true;
         else if (!strcmp(p, "--allow-clone3") || !strcmp(p, "-k"))   cfg->allow_clone3   = true;
         else if (!strcmp(p, "--friendly-sandbox"))  cfg->friendly_sandbox   = true;
@@ -2162,20 +2164,29 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                     break;
                 }
             }
-            if (mount(src, dst, NULL, MS_BIND | MS_REC, NULL) == 0) {
-                mount(NULL, dst, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
-                int check_fd = open(dst, O_PATH | O_NOFOLLOW | O_CLOEXEC);
-                if (check_fd < 0 && errno == ELOOP) {
-                    fprintf(stderr, "[RUN] --ro '%s': symlink escape detected  unmounting\n", src);
-                    umount2(dst, MNT_DETACH);
-                    cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REC, EPERM);
-                } else {
-                    if (check_fd >= 0) close(check_fd);
-                    cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REC | MS_RDONLY, 0);
-                }
+            if (mount(src, dst, NULL, MS_BIND | MS_REC, NULL) != 0) {
+                fprintf(stderr, "[RUN] --ro bind '%s': %s — aborting\n", src, strerror(errno));
+                cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REC, errno);
+                _exit(1);
+            }
+
+            /* FIX [Finding 2]: Verify recursive read-only remount and abort if it fails */
+            if (mount(NULL, dst, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL) != 0) {
+                fprintf(stderr, "[RUN] --ro remount '%s' read-only failed: %s — aborting\n", dst, strerror(errno));
+                cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, errno);
+                umount2(dst, MNT_DETACH);
+                _exit(1);
+            }
+
+            int check_fd = open(dst, O_PATH | O_NOFOLLOW | O_CLOEXEC);
+            if (check_fd < 0 && errno == ELOOP) {
+                fprintf(stderr, "[RUN] --ro '%s': symlink escape detected — aborting\n", src);
+                umount2(dst, MNT_DETACH);
+                cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REC, EPERM);
+                _exit(1);
             } else {
-                fprintf(stderr, "[RUN] --ro bind '%s': %s\n", src, strerror(errno));
-                cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REC, errno); 
+                if (check_fd >= 0) close(check_fd);
+                cli_log_mount_event(src, dst, "bind-ro", MS_BIND | MS_REC | MS_RDONLY, 0);
             }
             break;
         }
@@ -2229,28 +2240,42 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             }
             break;
         }
-        case BIND_BLACKLIST:
-            if (S_ISDIR(st.st_mode)) {
-                if (mount("tmpfs", src, "tmpfs",
+        case BIND_BLACKLIST: {
+            /* FIX [Finding 3]: Apply blacklist mask to destination path inside the completed jail tree (vault_path + src)
+             * instead of the host path, and abort execution if the mask cannot be installed. */
+            char dst[PATH_MAX];
+            snprintf(dst, sizeof(dst), "%s%s", vault_path, src);
+
+            struct stat dst_st;
+            if (stat(dst, &dst_st) != 0 && lstat(dst, &dst_st) != 0) {
+                /* Target does not exist in jail; nothing to mask */
+                break;
+            }
+
+            if (S_ISDIR(dst_st.st_mode)) {
+                if (mount("tmpfs", dst, "tmpfs",
                           MS_NOSUID | MS_NODEV | MS_RDONLY, "size=0") != 0) {
-                    fprintf(stderr, "[RUN] --blacklist dir '%s': %s\n",
-                            src, strerror(errno));
-                    cli_log_mount_event("tmpfs", src, "blacklist-dir",
+                    fprintf(stderr, "[RUN] --blacklist dir '%s' in jail failed: %s — aborting\n",
+                            dst, strerror(errno));
+                    cli_log_mount_event("tmpfs", dst, "blacklist-dir",
                                         MS_NOSUID | MS_NODEV | MS_RDONLY, errno);
+                    _exit(1);
                 } else {
-                    cli_log_mount_event("tmpfs", src, "blacklist-dir",
+                    cli_log_mount_event("tmpfs", dst, "blacklist-dir",
                                         MS_NOSUID | MS_NODEV | MS_RDONLY, 0);
                 }
             } else {
-                if (mount("/dev/null", src, NULL, MS_BIND, NULL) != 0) {
-                    fprintf(stderr, "[RUN] --blacklist file '%s': %s\n",
-                            src, strerror(errno));
-                    cli_log_mount_event("/dev/null", src, "blacklist-file", MS_BIND, errno);
+                if (mount("/dev/null", dst, NULL, MS_BIND, NULL) != 0) {
+                    fprintf(stderr, "[RUN] --blacklist file '%s' in jail failed: %s — aborting\n",
+                            dst, strerror(errno));
+                    cli_log_mount_event("/dev/null", dst, "blacklist-file", MS_BIND, errno);
+                    _exit(1);
                 } else {
-                    cli_log_mount_event("/dev/null", src, "blacklist-file", MS_BIND, 0);
+                    cli_log_mount_event("/dev/null", dst, "blacklist-file", MS_BIND, 0);
                 }
             }
             break;
+        }
         }
     }
 
@@ -2541,7 +2566,8 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
         setenv("PULSE_SERVER", pulse_addr, 1);
     }
 
-    if (cfg->iso_dbus_session && !cfg->iso_xdg_runtime) {
+    /* FIX [Finding 12]: Enforce iso_no_dbus check before mounting or advertising session bus */
+    if (cfg->iso_dbus_session && !cfg->iso_no_dbus && !cfg->iso_xdg_runtime) {
         char xdg[128]; ENSURE_XDG_DIR(xdg, sizeof(xdg));
         char bus_src[256], bus_dst[VAULT_PATH_MAX];
         snprintf(bus_src, sizeof(bus_src), "%s/bus", xdg);
@@ -2552,7 +2578,7 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
             mount(bus_src, bus_dst, NULL, MS_BIND, NULL);
         }
     }
-    if (cfg->iso_dbus_session) {
+    if (cfg->iso_dbus_session && !cfg->iso_no_dbus) {
         char addr[256];
         snprintf(addr, sizeof(addr), "unix:path=/run/user/%d/bus", (int)real_uid);
         setenv("DBUS_SESSION_BUS_ADDRESS", addr, 1);
@@ -2785,17 +2811,25 @@ static int run_isolated(CliConfig *cfg, char *vault_path) {
                       cfg->run_exec ? cfg->run_exec : "?", cfg->vault_id, (int)getpid());
         }
 
-        /* [LANDLOCK] Layer 3 MAC (VFS restriction) before Seccomp */
-        if (!cfg->permissive_sandbox) {
+        /* [LANDLOCK] Layer 3 VFS MAC — OPT-IN since v0.9.32
+         * Use --landlock to enable. Off by default because bind-mount inodes
+         * post-pivot_root differ from host inodes registered pre-pivot,
+         * causing false EPERM on legitimately bind-mounted paths. */
+        if (!cfg->permissive_sandbox && cfg->iso_landlock) {
             int ll_ret = landlock_apply(cfg, vault_path);
             if (ll_ret == 0) {
                 if (cfg->verbose)
                     printf("  -> [Layer 5] Landlock MAC enforced (VFS restrictions active)\n");
+                vault_log(LOG_AUDIT, "[LANDLOCK] VFS MAC active (opt-in via --landlock)");
             } else if (ll_ret == -2) {
                 fprintf(stderr,
                         "[SANDBOX][WARN] Landlock supported by kernel but failed -- "
                         "VFS unrestricted. Check logs for details.\n");
             }
+        } else if (!cfg->iso_landlock && cfg->verbose) {
+            vault_log(LOG_INFO, "[LANDLOCK] VFS MAC inactive (use --landlock to enable, off by default since v0.9.32)");
+        } else if (cfg->iso_no_landlock) {
+            vault_log(LOG_INFO, "[LANDLOCK] --no-landlock: no-op (already off by default since v0.9.32)");
         }
 
         /* [SECCOMP] Layer 4 MAC (Syscall restriction) */
@@ -2979,8 +3013,19 @@ static int dispatch(CliConfig *cfg) {
             goto cleanup;
         }
 
+#ifdef __linux__
+        uint32_t wf = vault_worm_get_flags_ffi(id);
+        bool is_scan = (wf & WORM_PROTECT_SCAN) != 0;
+#else
+        uint32_t wf = 0;
+        bool is_scan = false;
+#endif
+
         if (cfg->op_add) {
-            if (!cfg->add_file) { print_err("--add requires <file>"); ret = 1; }
+            if (is_scan || (wf & WORM_PROTECT_WRITE)) {
+                print_err("[WORM] --add blocked: WORM write protection is active on this vault.");
+                ret = -EPERM;
+            } else if (!cfg->add_file) { print_err("--add requires <file>"); ret = 1; }
             else ret = rust_vault_add(vpath, cfg->add_file, cfg->add_recursive, cfg->add_replace, cfg->add_preserve);
         } else if (cfg->op_extract) {
             if (!cfg->extract_file) { print_err("--extract requires <file>"); ret = 1; }
@@ -2989,19 +3034,34 @@ static int dispatch(CliConfig *cfg) {
                 ret = rust_vault_extract(vpath, cfg->extract_file, dest, cfg->extract_force);
             }
         } else if (cfg->op_mv) {
-            if (!cfg->mv_src || !cfg->mv_dest) { print_err("--mv requires <src> and <dest>"); ret = 1; }
+            if (is_scan || (wf & (WORM_PROTECT_RENAME | WORM_PROTECT_DELETE | WORM_PROTECT_WRITE))) {
+                print_err("[WORM] --mv blocked: WORM protection is active on this vault.");
+                ret = -EPERM;
+            } else if (!cfg->mv_src || !cfg->mv_dest) { print_err("--mv requires <src> and <dest>"); ret = 1; }
             else ret = rust_vault_mv(vpath, cfg->mv_src, cfg->mv_dest);
         } else if (cfg->op_cp) {
-            if (!cfg->cp_src || !cfg->cp_dest) { print_err("--cp requires <src> and <dest>"); ret = 1; }
+            if (is_scan || (wf & WORM_PROTECT_WRITE)) {
+                print_err("[WORM] --cp blocked: WORM write protection is active on this vault.");
+                ret = -EPERM;
+            } else if (!cfg->cp_src || !cfg->cp_dest) { print_err("--cp requires <src> and <dest>"); ret = 1; }
             else ret = rust_vault_cp(vpath, cfg->cp_src, cfg->cp_dest);
         } else if (cfg->op_rm_file) {
-            if (!cfg->rm_file_target) { print_err("--rm-file requires <file>"); ret = 1; }
+            if (is_scan || (wf & WORM_PROTECT_DELETE)) {
+                print_err("[WORM] --rm-file blocked: WORM delete protection is active on this vault.");
+                ret = -EPERM;
+            } else if (!cfg->rm_file_target) { print_err("--rm-file requires <file>"); ret = 1; }
             else ret = rust_vault_rm_file(vpath, cfg->rm_file_target);
         } else if (cfg->op_mkdir) {
-            if (!cfg->mkdir_target) { print_err("--mkdir requires <dir>"); ret = 1; }
+            if (is_scan || (wf & WORM_PROTECT_WRITE)) {
+                print_err("[WORM] --mkdir blocked: WORM write protection is active on this vault.");
+                ret = -EPERM;
+            } else if (!cfg->mkdir_target) { print_err("--mkdir requires <dir>"); ret = 1; }
             else ret = rust_vault_mkdir(vpath, cfg->mkdir_target);
         } else if (cfg->op_rmdir) {
-            if (!cfg->rmdir_target) { print_err("--rmdir requires <dir>"); ret = 1; }
+            if (is_scan || (wf & WORM_PROTECT_DELETE)) {
+                print_err("[WORM] --rmdir blocked: WORM delete protection is active on this vault.");
+                ret = -EPERM;
+            } else if (!cfg->rmdir_target) { print_err("--rmdir requires <dir>"); ret = 1; }
             else ret = rust_vault_rmdir(vpath, cfg->rmdir_target);
         } else if (cfg->op_tree) {
             ret = rust_vault_tree(vpath);
@@ -3015,10 +3075,16 @@ static int dispatch(CliConfig *cfg) {
         } else if (cfg->op_snapshots) {
             ret = rust_vault_snapshots(vpath);
         } else if (cfg->op_snapshot_delete) {
-            if (!cfg->snapshot_del_tag) { print_err("--snapshot-delete requires <tag>"); ret = 1; }
+            if (is_scan || (wf & WORM_PROTECT_DELETE)) {
+                print_err("[WORM] --snapshot-delete blocked: WORM delete protection is active on this vault.");
+                ret = -EPERM;
+            } else if (!cfg->snapshot_del_tag) { print_err("--snapshot-delete requires <tag>"); ret = 1; }
             else ret = rust_vault_snapshot_delete(vpath, cfg->snapshot_del_tag);
         } else if (cfg->op_snapshot_restore) {
-            if (!cfg->snapshot_restore_tag) { print_err("--snapshot-restore requires <tag>"); ret = 1; }
+            if (is_scan || (wf & WORM_PROTECT_WRITE)) {
+                print_err("[WORM] --snapshot-restore blocked: WORM write protection is active on this vault.");
+                ret = -EPERM;
+            } else if (!cfg->snapshot_restore_tag) { print_err("--snapshot-restore requires <tag>"); ret = 1; }
             else ret = rust_vault_snapshot_restore(vpath, cfg->snapshot_restore_tag);
         } else if (cfg->op_snapshot_diff) {
             if (!cfg->snapshot_diff_tag1) { print_err("--snapshot-diff requires <tag1> [tag2]"); ret = 1; }
@@ -3109,6 +3175,7 @@ static int dispatch(CliConfig *cfg) {
             ret = rust_vault_events(vpath);
         }
         goto cleanup;
+    }
 
     /*  MAC AppArmor (global, no vault-id needed)  */
     if (cfg->op_mac_enable) {

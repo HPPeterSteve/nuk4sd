@@ -138,7 +138,10 @@ static int nukfile_parse_internal(const char *filepath, CliConfig *cfg, int dept
         /* Divide em comando e argumentos */
         char cmd[256] = {0};
         char args[768] = {0};
-        if (sscanf(ptr, "%255s %[^\n]", cmd, args) < 1)
+        /* FIX [Finding 6 – CWE-120]: The original '%[^\n]' had no width limit,
+         * allowing a Nukfile line with a long argument to overflow args[768].
+         * The specifier is now limited to 767 characters (buffer size minus NUL). */
+        if (sscanf(ptr, "%255s %767[^\n]", cmd, args) < 1)
             continue;
 
         strip_quotes(args);

@@ -50,13 +50,12 @@
 /* ── Available ABI detection ──────────────────────────────────────── */
 static int landlock_abi_version(void)
 {
-    struct landlock_ruleset_attr probe = { .handled_access_fs = 0 };
-    int fd = ll_create_ruleset(&probe, sizeof(probe),
-                               LANDLOCK_CREATE_RULESET_VERSION);
-    if (fd < 0) return -1; /* kernel unsupported */
-    close(fd);
-    /* returned fd is the ABI version when flag=VERSION */
-    return (int)(long)fd;
+    /* FIX [Finding 2]: LANDLOCK_CREATE_RULESET_VERSION requires attr=NULL and size=0.
+     * The return value is the ABI version (int >= 1), NOT a file descriptor,
+     * so it must not be closed (closing it would close stdout/stderr!). */
+    int ver = ll_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    if (ver < 0) return -1; /* kernel unsupported or disabled */
+    return ver;
 }
 
 /* ── Full FS access supported by ABI ─────────────────────────────── */
@@ -90,9 +89,10 @@ static int ll_allow_path(int ruleset_fd, const char *path, __u64 allowed)
 {
     int fd = open(path, O_PATH | O_CLOEXEC);
     if (fd < 0) {
-        /* path might not exist (bind mount not performed yet) — non-fatal */
-        vault_log(LOG_WARN, "[LANDLOCK] open(O_PATH) failed for '%s': %s",
-                  path, strerror(errno));
+        /* Non-fatal: path may not exist after pivot_root (host paths gone) */
+        if (errno != ENOENT && errno != EACCES)
+            vault_log(LOG_WARN, "[LANDLOCK] open(O_PATH) failed for '%s': %s",
+                      path, strerror(errno));
         return 0;
     }
 
@@ -181,9 +181,14 @@ int landlock_apply(const CliConfig *cfg, const char *vault_root)
                       base_paths[i].rw ? all_access : ro_access);
     }
 
-    /* ── Vault root (jail root where pivot_root landed) ──────────────── */
+    /* ── Vault root / jail root ─────────────────────────────────────────
+     * After pivot_root, vault_root is the host path (/tmp/Nuk4sd-jail-XXXX)
+     * which no longer exists in the new filesystem. The jail root is now
+     * accessible as "/", so we always allow "/" with full access.
+     * vault_root is tried as well (works if called before pivot_root). ── */
+    ll_allow_path(ruleset_fd, "/", all_access);
     if (vault_root && *vault_root)
-        ll_allow_path(ruleset_fd, vault_root, all_access);
+        ll_allow_path(ruleset_fd, vault_root, all_access); /* pre-pivot: optional */
 
     /* ── User-declared bind mounts ─────────────────────────── */
     for (int i = 0; i < cfg->bind_count; i++) {

@@ -17,6 +17,9 @@
 #include "vault_core.h"
 
 #include <limits.h>
+#ifndef SYMLOOP_MAX
+#define SYMLOOP_MAX 32
+#endif
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -105,9 +108,19 @@ int mount_overlay(const char *upper, const char *work, const char *lower,
         return -1;
     }
 
+    /* FIX [Finding 5]: Reject reserved OverlayFS delimiters (':', ',', '\', '\n') in supplied paths to prevent layer/option injection */
+    const char *dirs[]  = { lower, upper, work, merged };
+    const char *names[] = { "lowerdir", "upperdir", "workdir", "merged" };
+    for (int i = 0; i < 4; i++) {
+        if (strpbrk(dirs[i], ":,\n\\")) {
+            vault_log(LOG_ERROR,
+                "[OVERLAY] %s '%s': path contains reserved OverlayFS delimiters — recusando",
+                names[i], dirs[i]);
+            return -1;
+        }
+    }
+
     if (vault_root) {
-        const char *dirs[]  = { lower, upper, work, merged };
-        const char *names[] = { "lowerdir", "upperdir", "workdir", "merged" };
         for (int i = 0; i < 4; i++) {
             if (!overlay_path_is_safe(vault_root, dirs[i])) {
                 vault_log(LOG_ERROR,
